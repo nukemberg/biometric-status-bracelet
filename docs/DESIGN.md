@@ -309,13 +309,31 @@ Format for the raw captures is `Timestamp_ms,RawPulse,RawGSR`.
 
 ---
 
-## 6. Connectivity (design — not yet implemented)
+## 6. Connectivity
 
 BLE initialised at boot and advertising continuously. Gating it behind a button gesture was
 considered and rejected: on datasheet estimates (not measured) the radio draws ~5–15 mA
 against ~45 mA for the MCU and 50–150 mA for the LEDs, so under 5 % of the budget — not
 worth a state machine and a third button gesture. Worth revisiting if actual current
 measurement contradicts the estimate.
+
+### Boot brownout — observed, not yet root-caused (-av5)
+
+After flashing, the board brownout-reset 2–3 times in a loop (`E BOD: Brownout detector
+was triggered`) immediately after the RMT/LED-channel init log line, before reaching
+`BleService::begin()`, then recovered and completed boot. The symptom (a brownout at a
+peripheral-enable that self-recovers after a few cycles) is characteristic of a marginal
+USB supply, not sustained LED current — and indeed the firmware holds the LEDs off during
+`setup()` and only lights them from `loop()`, so no LED current overlaps radio init. The
+"full-brightness startup sweep" an earlier note speculated about is not in the code.
+
+The boot sequence is staged defensively regardless: the RMT/LED driver and the BLE radio
+— the two highest-inrush peripherals — are brought up separately with short settle delays
+and log markers between them, so a marginal supply has a window to recover and a future
+capture can time any recurrence to a specific peripheral. **This does not confirm root
+cause.** That needs a real current measurement of the boot transient, on USB and again on
+a 18650 pack, before battery operation is trusted. The power figures above remain
+estimates.
 
 Stack is **NimBLE** (~250 KB flash vs ~700 KB for Bluedroid), keeping the default
 partition table.
