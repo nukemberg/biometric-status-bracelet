@@ -23,6 +23,7 @@ tools/
   dsp_v2_sim.py       Python reference implementation of the pipeline
   dsp_v2_parity.sh    proves the shipped C++ matches that reference
   ble_packet_test.sh  asserts the BLE wire layout against golden byte fixtures
+  capture.py          reads serial output from the board
 samples/          captures with known ground truth, used as regression cases
 ```
 
@@ -56,6 +57,22 @@ arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ./libraries firmware/ma
 arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ./libraries \
   --upload --port /dev/cu.usbserial-0001 firmware/main_armband
 ```
+
+## Capturing from the board
+
+Opening the serial port asserts DTR/RTS and reboots the ESP32, so a short capture only
+ever shows a cold-booting device — the GSR tonic EMA needs ~45 s to settle and the
+resonator bank ~10 s. Suppressing that in software does not work on the CP210x adapter
+(tested). Hold the port open instead:
+
+```sh
+tools/capture.py --seconds 0 --quiet --out session.log &   # resets once, then streams
+tail -f session.log
+```
+
+Stop the logger before flashing — it holds the port.
+
+## Build
 
 ESP32-S3 is the deployment target; uncomment `#define MCU_ESP32_S3` for its pin map. All
 bench work and every capture here was taken on an ESP32 WROOM-32 DevKit.
