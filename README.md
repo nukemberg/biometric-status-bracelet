@@ -24,6 +24,7 @@ tools/
   dsp_v2_parity.sh    proves the shipped C++ matches that reference
   ble_packet_test.sh  asserts the BLE wire layout against golden byte fixtures
   capture.py          reads serial output from the board
+  jitter_notch.py     how much sampling jitter degrades the 50 Hz notch
 samples/          captures with known ground truth, used as regression cases
 ```
 

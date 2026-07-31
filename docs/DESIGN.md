@@ -394,10 +394,37 @@ produces silently wrong numbers rather than an error.
 - The scheduling-jitter metric ships from the first BLE commit, so the core-0 risk below is
   measured rather than argued about.
 
-### Known risk
+### Core allocation and jitter — measured, not a risk
 
-NimBLE's controller task pins to **core 0**, shared with the 500 Hz DSP task. The boxcar's
-50 Hz notch depends on an accurate 40 ms window, so BLE activity could degrade it. Rather
-than restructure preemptively, the DSP loop will publish a scheduling-jitter metric
-(min/max/mean actual period vs the 2 ms target). If measured jitter proves harmful, the
-fix is hardware-timer sampling, which decouples the ADC from task scheduling entirely.
+NimBLE's controller task pins to **core 0**, shared with the 500 Hz DSP task, which
+raised the question of whether it disturbs the 40 ms boxcar window the 50 Hz notch
+depends on. Measured rather than argued:
+
+| timing | 50 Hz rejection | survives on GSR (14 counts RMS mains) |
+|---|---|---|
+| ideal | complete | 0.000 counts |
+| baseline, no BLE (±190 µs) | 48 dB | 0.054 counts |
+| BLE advertising (±850 µs) | 35 dB | 0.241 counts |
+| ±2000 µs, a full period | 28 dB | 0.562 counts |
+
+SCR features of interest are 10–40 counts, so even full-period jitter leaves mains at
+~1.4 % of the smallest thing we measure. **No core rebalancing is needed.** The notch
+degrades gracefully because `vTaskDelayUntil` holds an absolute deadline, so timing
+error does not accumulate and the window *length* stays exact — only its uniformity
+suffers. Sample counts confirm nothing is dropped: 5003 per 10 s window with BLE running
+is exactly 500 Hz. Reproduce with `tools/jitter_notch.py`.
+
+Current split: **core 0** runs the DSP task plus the NimBLE controller and host; **core 1**
+runs the Arduino loop (FastLED at 60 fps, the bank search, button, serial, BLE publish).
+
+If load ever does need spreading, the levers are moving the NimBLE *host* task to core 1
+via `CONFIG_BT_NIMBLE_PINNED_TO_CORE` — the *controller* is fixed to core 0 by the
+precompiled IDF — or taking ADC sampling into a hardware-timer ISR. Neither is currently
+justified.
+
+### Security posture
+
+BLE is unauthenticated by deliberate choice: vitals are readable and config writable by
+any device in range, with no pairing. The tradeoff was raised and declined — usability
+over security for this device. Reads are in any case only a sharper version of what the
+21 LEDs already display to anyone nearby.
