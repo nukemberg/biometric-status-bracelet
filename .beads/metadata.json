@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "biometric_status_bracelet",
+  "project_id": "7e14c4e3-a3eb-4538-91ec-14c344e37e6b"
+}
