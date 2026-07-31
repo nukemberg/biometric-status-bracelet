@@ -1,0 +1,11 @@
+# Claude Code ctags index
+.claude/tags
+
+# Python
+__pycache__/
+*.pyc
+
+# Arduino / build output
+build/
+*.elf
+*.bin.hex

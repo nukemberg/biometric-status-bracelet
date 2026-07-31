@@ -1,0 +1,97 @@
+# Project Overview: Biometric Status Bracelet / Armband
+
+A wearable festival/party biometrics panel worn on the forearm via a fabric sleeve with velcro closure. It processes real-time biometric signals and displays interactive lighting effects on an LED matrix/bar display.
+
+## Hardware Specification
+
+### Controller & Power
+- **MCU:** ESP32-S3 DevKit (Standard DevKitC-1 or similar dual USB-C/micro-USB).
+  - *Note on Form Factor:* For the final wearable enclosure on the forearm, a smaller **Seeed Studio XIAO ESP32-S3** or **Adafruit QT Py ESP32-S3** can be swapped in if space on the sleeve is tight, but DevKit works perfectly for prototyping and wearability testing.
+- **Power:** 18650 rechargeable battery pack supplying regulated 5V output.
+- **Wearable Mounting:** Fabric forearm sleeve base with velcro strap.
+
+### Sensors & Inputs
+1. **GSR (Galvanic Skin Response):** Seeed Studio Grove - GSR Sensor v1.2
+   - Powered from 3.3V rail. Signal (SIG) to GPIO 1 (ADC1_CH0). TP1 left disconnected.
+   - Measures skin resistance / stress / excitement.
+2. **Pulse Sensor:** XY1911-074 B506 photoplethysmogram (PPG) pulse sensor
+   - Powered from 3.3V rail. Signal (S) to GPIO 2 (ADC1_CH1).
+   - Measures heart rate and heartbeat timing.
+3. **Temperature Sensor:** Digital $I^2C$ Sensor (**TMP102**, **HDC1080**, or **BME280**)
+   - Powered from 3.3V rail. Connected via SDA (GPIO 8) and SCL (GPIO 9).
+   - Micro-amp ($\mu\text{A}$) ultra-low power consumption for maximum 18650 battery life. High precision skin/ambient temperature. Zero analog noise!
+4. **Physical Tactile Button:** Connected between GPIO 5 and GND (using internal pull-up resistor).
+   - Functions: Short press = cycle visual modes / toggle brightness; Long press (2s) = recalibrate GSR baseline.
+
+### Output / Visual Display
+- **Addressable LED Strip:** WS2812B (60 LEDs/m density).
+- **Layout:** 21 LEDs (3x7 matrix) or 18 LEDs (3x6 matrix) arranged in 3 parallel serpentine or parallel segments.
+  - Data pin: Connected to GPIO 4 via 330Ω resistor. Power: 5V rail from 18650 pack.
+- **Visual Segments:**
+  1. **Bar 1 - Heart Pulse Segment (7 LEDs):** Thumping / glowing cardiac wave animation, color-coded by BPM range (e.g. relaxed blue/green -> energetic red/magenta).
+  2. **Bar 2 - Excitement / Stress Bar (7 LEDs):** Dynamic multi-color VU-meter driven by GSR (skin conductance delta).
+  3. **Bar 3 - Temperature Meter (7 LEDs):** Thermal gradient gauge (Cool Blue -> Yellow -> Warm Red/Pink).
+
+### Connectivity & Control
+- **BLE (Bluetooth Low Energy):**
+  - Serves live biometric values (BPM, GSR raw & dynamic arousal level, Temperature °C).
+  - Allows smartphone app / web-bluetooth page to tweak LED brightness, change palettes, or trigger manual party/hype modes.
+  - Potential multi-device broadcast mode for festival sync with other armbands nearby.
+
+---
+
+## Technical Considerations & Signal Processing
+
+### Voltage & ADC Safety
+- All sensors operate off the ESP32-S3 **3.3V rail**.
+- On ESP32-S3, Wi-Fi can interfere with ADC2 pins. Therefore, **all analog sensors MUST be assigned to ADC1 pins** (GPIO 1 through 10).
+- WS2812B data pin (GPIO 4) includes a 330Ω inline resistor. Most 18–21 LED WS2812B strips accept 3.3V logic directly; if flickering occurs, use the diode drop trick or 74AHCT125 level shifter.
+
+### Pin Allocation Map (Default)
+| Component | Function | Suggested Pin |
+|---|---|---|
+| WS2812B Data | LED Strip Data Signal | GPIO 4 |
+| Grove GSR v1.2 | Analog Skin Conductance | GPIO 1 (ADC1_CH0) |
+| Pulse Sensor | Analog Photoplethysmogram | GPIO 2 (ADC1_CH1) |
+| Temp Sensor ($I^2C$) | Digital $I^2C$ Data (SDA) | GPIO 8 |
+| Temp Sensor ($I^2C$) | Digital $I^2C$ Clock (SCL) | GPIO 9 |
+| Button | Mode / Recalibrate Switch | GPIO 5 (Input Pullup) |
+
+### Visual & Interactive Modes
+
+1. **Standard Biometric Panel (Default):**
+   - Bar 1: Pulse Heartbeat Beat & Wave
+   - Bar 2: Excitement Meter (GSR)
+   - Bar 3: Body Temperature Bar
+2. **Overdrive / Hype Party Mode (Auto-Triggered or Button):**
+   - Activated when High BPM + High GSR Excitement occur simultaneously.
+   - Matrix-wide strobing, rainbow chases, or fire effect across all 3 segments.
+3. **BLE Control / Stealth Mode:**
+   - Low-brightness night mode or custom user-selected palette via BLE commands.
+
+---
+
+## Implementation & Testing Roadmap
+
+### Phase 1: Sensor Interfacing & Diagnostic Validation (In Progress)
+- [x] Document hardware wiring and ADC mapping for ESP32-S3 and Standard ESP32 (`SENSOR_TESTING.md`, `ESP32_STANDARD_MAPPING.md`).
+- [x] Hardware wired on breadboard test rig (ESP32 DevKit, GSR, PPG Pulse, BME280, WS2812B).
+- [x] Flash diagnostic sketch (`firmware/sensor_test_esp32_standard/sensor_test_esp32_standard.ino`).
+- [x] Inspect raw ADC values and PPG wave signals via Serial Plotter (Pulse, GSR, BME280 verified working!).
+
+### Phase 2: Signal Processing & DSP Implementation
+- [x] Implement exponential moving average (EMA) filter & adaptive peak detection algorithm for PPG Pulse sensor (calculate live BPM).
+- [x] Implement dynamic baseline calibration & conductance delta tracking for Grove GSR.
+- [x] Implement temperature scaling and thermal color mapping.
+
+### Phase 3: Visual Engine & LED Segment Rendering
+- [x] 3x7 matrix indexing map for serpentine / parallel WS2812B strip.
+- [x] Segment 1: Cardiac heartbeat thumping animation (color synced to BPM).
+- [x] Segment 2: GSR Excitement level dynamic VU-meter bar.
+- [x] Segment 3: Thermal temperature gradient gauge.
+- [x] Overdrive / Hype combo effect mode.
+- [x] Dual-core FreeRTOS architecture implemented (`firmware/main_armband/main_armband.ino`).
+
+### Phase 4: User Controls & BLE Wireless
+- [x] Button debouncing & state machine (Short press: mode toggle; Long press: GSR zeroing).
+- [ ] BLE GATT server implementation (live telemetry stream & remote control).
