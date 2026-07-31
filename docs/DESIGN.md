@@ -251,6 +251,32 @@ pulse from strong motion. A handled or shaken board reaches 1.7 % and reads as t
 while the tracker walks steadily up through implausible rates. Motion rejection is not
 solved.
 
+### 3.6 Hardware roadmap
+
+The current design is **v1: analog sensors through the ESP32 SAR ADC**, and everything
+in §2 is calibrated against that path.
+
+**v2 (planned, `bd -kp5`)** replaces the front end: MAX30102 for PPG, optionally ADS1115
+for GSR. The motivation is §2.1 — SNR below 1 is the wall every DSP effort has hit, and
+no algorithm recovers a signal beneath its noise floor. MAX30102 brings its own LED
+driver, 18-bit ADC and ambient subtraction, plus a proximity mode that gives a second
+independent wear signal. ADS1115's PGA at ±0.256 V gives ~7.8 µV/count against the
+ESP32's ~800 µV/count, and its ΔΣ data rate doubles as its filter — at 8–16 SPS it
+rejects mains better than the boxcar of §3.1, letting GSR leave the 500 Hz path entirely.
+
+**The cost is that v2 invalidates the calibration in §2.** SNR, perfusion index,
+`PI_TRUST_MIN`, `CONF_REF`/`CONF_GATE`, bank τ and the harmonic-capture measurements are
+all properties of the analog path. `samples/bio2.log` and `bio4.csv` cease to be valid
+regression cases and ground truth must be recaptured. It is a replatform, not a drop-in.
+
+**An IMU (`bd -00y`) is independent of that** and can land first: it needs no front-end
+change and invalidates nothing. Its role is not to measure arousal — motion-to-excitement
+correlations are weak and highly person-specific. It is the *denominator* that stops the
+other sensors lying: HR 110 from excitement and HR 110 from walking are indistinguishable
+without it, and arm movement produces SCR-shaped GSR artifacts that look exactly like
+real arousal events. It is also a principled replacement for the perfusion-based pulse
+trust heuristic, which §3.5 shows failing under motion.
+
 ---
 
 ## 4. Validation methodology
