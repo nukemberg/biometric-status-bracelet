@@ -65,6 +65,7 @@ bool bmeConnected = false;
 // Arduino and BLE types so tools/dsp_v2_parity.sh can compile these exact
 // trackers on a host and prove them equal to the Python reference.
 #include <dsp.h>
+#include "ble_service.h"
 
 struct BiometricData {
   uint16_t pulseRaw = 0;
@@ -406,12 +407,17 @@ void setup() {
     bmeConnected = true;
   }
 
+  // Started after the DSP task so the jitter monitor has a clean window before the
+  // radio exists; -a75 compares the two.
   xTaskCreatePinnedToCore(TaskSensorDSP, "SensorDSP", 4096, NULL, 2, NULL, 0);
+
+  BleService::begin("Bracelet");
 }
 
 unsigned long lastSerialPrint = 0;
 unsigned long lastFrameMs = 0;
 unsigned long lastJitterPrint = 0;
+unsigned long lastVitalsPublish = 0;
 
 void loop() {
   unsigned long now = millis();
@@ -437,6 +443,33 @@ void loop() {
 
   renderBiometricPanel();
   FastLED.show();
+
+  // 4 Hz vitals. Snapshot under the lock, pack and send outside it -- NimBLE can
+  // block, and holding a portMUX critical section across that would stall the DSP
+  // task on core 0, which is precisely the interference we are trying to measure.
+  if (now - lastVitalsPublish >= 250) {
+    lastVitalsPublish = now;
+
+    BleVitals v;
+    bioDataLock();
+    v.bpm = bio.bpm;
+    v.confidence = bio.confidence;
+    v.arousal = bio.gsrExcitement;
+    v.perfusion = bio.perfusion;
+    v.tempC = bio.tempC;
+    v.gsrTonic = bio.gsrTonic;
+    v.gsrRaw = bio.gsrRaw;
+    v.pulseRaw = bio.pulseRaw;
+    v.brightness = bio.brightness;
+    v.mode = bio.displayMode;
+    v.worn = bio.worn;
+    v.pulseTrusted = bio.pulseTrusted;
+    bioDataUnlock();
+    v.strobe = (v.mode == 1) || (v.pulseTrusted && displayBpm > 150.0f &&
+                                 v.arousal > 0.65f);
+
+    BleService::publishVitals(v);
+  }
 
   if (now - lastSerialPrint > 1000) {
     bioDataLock();
