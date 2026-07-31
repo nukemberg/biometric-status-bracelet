@@ -307,7 +307,7 @@ one responsibility each:
 | File | Responsibility | Depends on |
 |---|---|---|
 | `main_armband.ino` | setup, FreeRTOS tasks, render loop | all |
-| `dsp.h` | `PulseTracker`, `GsrTracker`, `WearDetect` | nothing |
+| `libraries/BraceletDSP/src/dsp.h` | `PulseTracker`, `GsrTracker`, `WearDetect` | `<math.h>`, `<stdint.h>` |
 | `ble_service.h` / `.cpp` | GATT setup, packet packing, command dispatch | `BiometricData` snapshot + control callback |
 | `config.h` / `.cpp` | tunables struct, NVS load/save/reset | NVS |
 
@@ -315,6 +315,12 @@ The load-bearing constraint is that **`dsp.h` stays free of Arduino and BLE type
 is what allows `tools/dsp_v2_parity.sh` to keep compiling the real trackers on the host
 and proving them equal to the Python reference. BLE reads a snapshot struct and never
 reaches into tracker internals.
+
+Shipped as an Arduino library (`--libraries ./libraries`) rather than a sketch-local
+header, because `dsp_v2` and `main_armband` both need it and previously carried duplicate
+copies that could drift apart. `WearDetect` reports a release via a `justReleased` flag
+rather than clearing the resonator bank itself — that coupling would have dragged the
+whole pulse engine into a class that answers one yes/no question.
 
 ### Consumers
 

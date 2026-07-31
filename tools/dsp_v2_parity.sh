@@ -11,7 +11,7 @@ LOG="${1:-samples/bio2.log}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-c++ -O2 -std=c++17 -Itools/hoststub -o "$OUT/parity" tools/dsp_v2_parity.cpp
+c++ -O2 -std=c++17 -Ilibraries/BraceletDSP/src -o "$OUT/parity" tools/dsp_v2_parity.cpp
 "$OUT/parity" "$LOG" > "$OUT/cpp.csv"
 
 uv run python tools/dsp_v2_sim.py "$LOG" --rate 1 \

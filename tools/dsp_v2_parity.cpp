@@ -1,60 +1,22 @@
-// Host-side parity harness for firmware/dsp_v2/dsp_v2.ino.
+// Host-side parity harness for libraries/BraceletDSP.
 //
-// Includes the real sketch (with the Arduino/FreeRTOS surface stubbed out) and
-// replays a raw_streamer CSV through the actual PulseTracker/GsrTracker code, so the
-// firmware and tools/dsp_v2_sim.py can be shown to agree numerically rather than
-// merely to look alike.
+// Replays a raw_streamer CSV through the real PulseTracker/GsrTracker -- the exact
+// code the firmware runs -- and prints the result so it can be diffed against the
+// Python reference in tools/dsp_v2_sim.py. If the two disagree, offline validation
+// says nothing about on-device behaviour.
 //
-// Build & run:  tools/dsp_v2_parity.sh bio2.log
+// Because dsp.h depends only on <math.h> and <stdint.h>, this needs no Arduino
+// stubbing at all. Keep it that way: any Arduino or BLE type that leaks into the
+// library breaks this harness and costs us the validation path that has caught
+// every bug in this pipeline so far.
+//
+// Build & run:  tools/dsp_v2_parity.sh [capture.csv]
 
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <string>
-#include <vector>
 
-// --- Arduino / FreeRTOS stubs ----------------------------------------------
-#define ADC_11db 3
-#define INPUT_PULLUP 2
-#define HIGH 1
-#define LOW 0
-#define F(s) (s)
+#include <dsp.h>
 
-typedef uint32_t TickType_t;
-typedef int portMUX_TYPE;
-#define portMUX_INITIALIZER_UNLOCKED 0
-#define portENTER_CRITICAL(x) ((void)0)
-#define portEXIT_CRITICAL(x) ((void)0)
-#define pdMS_TO_TICKS(ms) (ms)
-
-static inline TickType_t xTaskGetTickCount() { return 0; }
-static inline void vTaskDelayUntil(TickType_t *, TickType_t) {}
-static inline void xTaskCreatePinnedToCore(void (*)(void *), const char *, int,
-                                           void *, int, void *, int) {}
-static inline int analogRead(int) { return 0; }
-static inline void analogReadResolution(int) {}
-static inline void analogSetAttenuation(int) {}
-static inline void pinMode(int, int) {}
-static inline int digitalRead(int) { return HIGH; }
-static inline unsigned long millis() { return 0; }
-static inline void delay(unsigned long) {}
-
-struct FakeSerial {
-  void begin(long) {}
-  void print(const char *) {}
-  void print(unsigned long) {}
-  void print(char) {}
-  void print(float, int) {}
-  void print(int) {}
-  void println(const char *) {}
-  void println(unsigned long) {}
-  void println(float, int) {}
-} Serial;
-
-#include "../firmware/dsp_v2/dsp_v2.ino"
-
-// ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
   if (argc < 2) {
     fprintf(stderr, "usage: %s <raw_streamer.csv>\n", argv[0]);
@@ -63,6 +25,8 @@ int main(int argc, char **argv) {
   FILE *fh = fopen(argv[1], "r");
   if (!fh) { perror(argv[1]); return 1; }
 
+  PulseTracker pulse;
+  GsrTracker gsr;
   pulse.begin();
   gsr.begin();
 
@@ -91,7 +55,7 @@ int main(int argc, char **argv) {
 
     if (ts - tLastReport >= 1000.0) {
       tLastReport = ts;
-      printf("%.1f,%.1f,%.2f,%.2f,%.3f,%.1f\n", (ts) / 1000.0, pulse.bpm,
+      printf("%.1f,%.1f,%.2f,%.2f,%.3f,%.1f\n", ts / 1000.0, pulse.bpm,
              pulse.confidence, pulse.phase, gsr.arousal, gsr.tonic);
     }
   }

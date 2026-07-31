@@ -10,8 +10,11 @@ processing design, and what turned out to be true (and false) about these sensor
 ## Layout
 
 ```
+libraries/
+  BraceletDSP/    the pulse, GSR and wear-detection engines — shared by every
+                  consumer, and deliberately free of Arduino and BLE types
 firmware/
-  main_armband/   production firmware — DSP, LEDs, wear detection
+  main_armband/   production firmware — LEDs, tasks, wear gating
   dsp_v2/         bench sketch, streams computed values as CSV, no LEDs
   raw_streamer/   500 Hz raw capture for spectral ground truth
   sensor_test/    hardware bring-up smoke test
@@ -20,6 +23,10 @@ tools/
   dsp_v2_parity.sh  proves the shipped C++ matches that reference
 samples/          captures with known ground truth, used as regression cases
 ```
+
+`libraries/BraceletDSP/src/dsp.h` depends only on `<math.h>` and `<stdint.h>`. That is
+what lets the parity harness compile the *real* trackers on a host machine — keep Arduino
+and BLE types out of it.
 
 ## Working on the signal processing
 
@@ -40,8 +47,9 @@ peak at 64.1 BPM.
 ## Build
 
 ```sh
-arduino-cli compile --fqbn esp32:esp32:esp32 firmware/main_armband
-arduino-cli compile --fqbn esp32:esp32:esp32 --upload --port /dev/cu.usbserial-0001 firmware/main_armband
+arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ./libraries firmware/main_armband
+arduino-cli compile --fqbn esp32:esp32:esp32 --libraries ./libraries \
+  --upload --port /dev/cu.usbserial-0001 firmware/main_armband
 ```
 
 ESP32-S3 is the deployment target; uncomment `#define MCU_ESP32_S3` for its pin map. All
