@@ -264,10 +264,11 @@ Format for the raw captures is `Timestamp_ms,RawPulse,RawGSR`.
 
 ## 6. Connectivity (design — not yet implemented)
 
-BLE initialised at boot and advertising continuously. Power measurement puts the radio at
-~5–15 mA against ~45 mA for the MCU and 50–150 mA for the LEDs, so gating it behind a
-button gesture was considered and rejected as under 5 % of the budget — not worth the
-state machine.
+BLE initialised at boot and advertising continuously. Gating it behind a button gesture was
+considered and rejected: on datasheet estimates (not measured) the radio draws ~5–15 mA
+against ~45 mA for the MCU and 50–150 mA for the LEDs, so under 5 % of the budget — not
+worth a state machine and a third button gesture. Worth revisiting if actual current
+measurement contradicts the estimate.
 
 Stack is **NimBLE** (~250 KB flash vs ~700 KB for Bluedroid), keeping the default
 partition table.
@@ -298,12 +299,47 @@ live, which offline analysis could only infer.
 **Config persists to NVS**, with an explicit reset-to-defaults command exposed in the web
 app.
 
+### Firmware structure
+
+BLE pushes `main_armband.ino` past 900 lines, so the sketch folder splits into units with
+one responsibility each:
+
+| File | Responsibility | Depends on |
+|---|---|---|
+| `main_armband.ino` | setup, FreeRTOS tasks, render loop | all |
+| `dsp.h` | `PulseTracker`, `GsrTracker`, `WearDetect` | nothing |
+| `ble_service.h` / `.cpp` | GATT setup, packet packing, command dispatch | `BiometricData` snapshot + control callback |
+| `config.h` / `.cpp` | tunables struct, NVS load/save/reset | NVS |
+
+The load-bearing constraint is that **`dsp.h` stays free of Arduino and BLE types**. That
+is what allows `tools/dsp_v2_parity.sh` to keep compiling the real trackers on the host
+and proving them equal to the Python reference. BLE reads a snapshot struct and never
+reaches into tracker internals.
+
 ### Consumers
 
-- **Web app** — single self-contained HTML file using Web Bluetooth, served over HTTPS via
-  GitHub Pages. Requires Chrome on Android; iOS Safari does not implement Web Bluetooth.
-- **CLI** (`tools/blectl.py`) — Python + `bleak`, for reading vitals and streams from the
-  development machine without a USB tether.
+- **Web app** — single self-contained `webapp/index.html` using Web Bluetooth: live vitals
+  tiles, scrolling chart for the 25 Hz signals, bar chart for the 48-bin spectrum, and
+  controls for mode / brightness / recalibrate plus config sliders with reset-to-defaults.
+  No build step, no dependencies. Served over HTTPS via GitHub Pages from `/webapp`.
+  Requires Chrome on Android; **iOS Safari does not implement Web Bluetooth**.
+- **CLI** (`tools/blectl.py`) — Python + `bleak`. Subcommands mirror the GATT: `scan`,
+  `monitor`, `stream`, `spectrum`, `config get/set`, `cmd`. Lets the development machine
+  read the device untethered.
+
+### Testing
+
+The packet layout is the risk: a struct-packing mismatch between firmware, web app and CLI
+produces silently wrong numbers rather than an error.
+
+- `tools/ble_packet_test.cpp` compiles the **real packing header** on the host, round-trips
+  known values and asserts the byte layout — the same pattern as the parity harness, which
+  has already caught one real bug.
+- `blectl.py --selftest` decodes a recorded packet fixture, so firmware and Python are
+  checked against the same bytes.
+- On device, `blectl monitor` runs alongside USB serial and the two are compared.
+- The scheduling-jitter metric ships from the first BLE commit, so the core-0 risk below is
+  measured rather than argued about.
 
 ### Known risk
 
