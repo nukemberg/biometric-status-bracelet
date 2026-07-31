@@ -182,6 +182,67 @@
   .control + .control { margin-top: 1.3rem; }
   .control > .eyebrow { display: block; margin-bottom: 0.6rem; }
 
+  /* ---- charts (-d7y) --------------------------------------------------- */
+  /* Streams are off unless a chart is visible, so the charts own their enable
+     state rather than a separate switch: the toggle is both "show this chart"
+     and "subscribe to this stream". */
+  .charts { padding-top: 1.5rem; }
+  .chart-card + .chart-card { margin-top: 1.1rem; }
+  .chart-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 0.8rem; margin-bottom: 0.6rem;
+  }
+  .chart-head .eyebrow { margin: 0; }
+  .chart-card button {
+    padding: 0.5rem 0.7rem;
+  }
+  canvas {
+    display: block; width: 100%; height: 6rem;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+  }
+  .legend {
+    display: flex; gap: 1rem; margin-top: 0.45rem;
+    font-size: 0.5625rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .legend i {
+    display: inline-block; width: 0.6rem; height: 0.25rem; margin-right: 0.35rem;
+    vertical-align: middle;
+  }
+  .chart-card[hidden] canvas, .chart-card[hidden] .legend { display: none; }
+
+  /* ---- tuning (-x9q) --------------------------------------------------- */
+  /* Collapsed by default: tunables are rarely adjusted mid-session, so they
+     live behind a <details> rather than crowding the controls above the connect
+     button. Sliders are built from CONFIG_META so the min/max/step live in one
+     place and a new tunable cannot end up with a slider that disagrees with the
+     device's plausibility bounds. */
+  details.tuning { padding-top: 1.5rem; }
+  details.tuning > summary {
+    cursor: pointer; list-style: none;
+    font-size: 0.625rem; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  details.tuning > summary::-webkit-details-marker { display: none; }
+  details.tuning[open] > summary { color: var(--ink); margin-bottom: 0.4rem; }
+  .tune-group-head {
+    margin-top: 0.9rem; color: var(--ink-faint);
+  }
+  .tune-group-head:first-child { margin-top: 0; }
+  .tune-row {
+    display: grid;
+    grid-template-columns: 6.5rem 1fr 3rem;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.45rem 0;
+  }
+  .tune-row label {
+    font-size: 0.5625rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .tune-row output { font-size: 0.8125rem; text-align: right; color: var(--ink); }
+
   .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
 
   button {
@@ -307,6 +368,39 @@
     </div>
   </section>
 
+  <section class="charts" id="charts" hidden>
+    <div class="chart-card" id="signalCard" hidden>
+      <div class="chart-head">
+        <span class="eyebrow">Signal · 25 Hz</span>
+        <button type="button" id="signalToggle" aria-pressed="true">On</button>
+      </div>
+      <canvas id="signalCanvas"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--pulse-amber)"></i>Pulse filtered</span>
+        <span><i style="background:var(--arousal-hi)"></i>GSR phasic</span>
+      </div>
+    </div>
+
+    <div class="chart-card" id="spectrumCard" hidden>
+      <div class="chart-head">
+        <span class="eyebrow">Spectrum · 1 Hz</span>
+        <button type="button" id="spectrumToggle" aria-pressed="true">On</button>
+      </div>
+      <canvas id="spectrumCanvas"></canvas>
+      <div class="legend">
+        <span id="spectrumPeak">peak —</span>
+      </div>
+    </div>
+  </section>
+
+  <details class="tuning" id="tuning" hidden>
+    <summary>Tuning</summary>
+    <div id="tuneBody"></div>
+    <div class="control" style="padding-top:1.1rem">
+      <button type="button" class="wide" id="resetConfig" disabled>Reset to defaults</button>
+    </div>
+  </details>
+
   <section class="controls">
     <div class="control">
       <span class="eyebrow">Display</span>
@@ -323,6 +417,15 @@
         <input type="range" id="brightness" min="0" max="255" value="60"
                aria-label="Brightness" disabled>
         <output id="brightnessOut">60</output>
+      </div>
+    </div>
+
+    <div class="control">
+      <span class="eyebrow">Charts</span>
+      <div class="segmented" role="group" aria-label="Charts"
+           style="grid-template-columns: repeat(2, 1fr)">
+        <button type="button" id="chartSignals" disabled>Signal</button>
+        <button type="button" id="chartSpectrum" disabled>Spectrum</button>
       </div>
     </div>
 
@@ -347,11 +450,49 @@
 const PROTOCOL_VERSION = 1;
 const SVC      = "a1b20001-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_VITALS  = "a1b20002-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_SIGNALS = "a1b20003-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_SPECTRUM= "a1b20004-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_CONTROL = "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_CONFIG  = "a1b20006-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_INFO    = "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70";
 
 const VITALS_LEN = 18;
 const CMD_SET_MODE = 0x01, CMD_SET_BRIGHTNESS = 0x02, CMD_RECALIBRATE_GSR = 0x03;
+const CMD_SET_STREAMS = 0x04, CMD_RESET_CONFIG = 0x06;
+const STREAM_SIGNALS = 0x01, STREAM_SPECTRUM = 0x02;
+
+// Config parameter ids, mirroring BleConfigParam in ble_protocol.h. The config UI
+// (-x9q) builds on these; the wire format itself is owned by -pmw.
+const CONFIG_PARAMS = {
+  hue_bpm_lo: 0x01, hue_bpm_hi: 0x02, hue_at_lo: 0x03, hue_at_hi: 0x04,
+  pi_trust_min: 0x05, gsr_worn_min: 0x06, gsr_worn_max: 0x07,
+  conf_gate: 0x08, conf_ref: 0x09, slew_bpm_s: 0x0A,
+};
+const CONFIG_PARAM_COUNT = Object.keys(CONFIG_PARAMS).length;
+const CONFIG_PARAM_BY_ID = Object.fromEntries(
+  Object.entries(CONFIG_PARAMS).map(([n, id]) => [id, n]));
+
+// Slider ranges for the tuning UI (-x9q). Each is chosen to cover the useful
+// operating range and stay WITHIN the device's plausibility bounds
+// (config_store FIELDS), so a slider can never produce a value the device
+// rejects. For the rare case where a wider range is needed, use blectl.
+const CONFIG_META = {
+  hue_bpm_lo:   {min: 30,  max: 200,  step: 1,   label: "Hue BPM low"},
+  hue_bpm_hi:   {min: 30,  max: 200,  step: 1,   label: "Hue BPM high"},
+  hue_at_lo:    {min: -90, max: 270,  step: 1,   label: "Hue @ low"},
+  hue_at_hi:    {min: -90, max: 270,  step: 1,   label: "Hue @ high"},
+  pi_trust_min: {min: 0,   max: 5,    step: 0.01, label: "Perfusion trust"},
+  gsr_worn_min: {min: 0,   max: 4095, step: 5,   label: "GSR worn min"},
+  gsr_worn_max: {min: 0,   max: 4095, step: 5,   label: "GSR worn max"},
+  conf_gate:    {min: 0,   max: 1,    step: 0.01, label: "Conf gate"},
+  conf_ref:     {min: 0,   max: 1,    step: 0.01, label: "Conf ref"},
+  slew_bpm_s:   {min: 0,   max: 30,   step: 0.5,  label: "Slew BPM/s"},
+};
+const CONFIG_GROUPS = [
+  {name: "Hue gradient",  params: ["hue_bpm_lo", "hue_bpm_hi", "hue_at_lo", "hue_at_hi"]},
+  {name: "Wear gate",     params: ["pi_trust_min", "gsr_worn_min", "gsr_worn_max"]},
+  {name: "Pulse tracking", params: ["conf_gate", "conf_ref", "slew_bpm_s"]},
+];
 
 function decodeVitals(dv) {
   if (dv.byteLength < VITALS_LEN) throw new Error(`short packet (${dv.byteLength}B)`);
@@ -376,6 +517,72 @@ function decodeVitals(dv) {
     pulseTrusted: !!(flags & 0x02),
     strobe:       !!(flags & 0x04),
   };
+}
+
+// Config characteristic (-pmw). Write is one [paramId][f32] record; read is
+// CONFIG_PARAM_COUNT of them in ascending paramId order. Mirrors ble_protocol.h.
+function encodeConfigWrite(param, value) {
+  const id = CONFIG_PARAMS[param];
+  if (id === undefined) throw new Error(`unknown config parameter ${param}`);
+  const buf = new ArrayBuffer(5);
+  const dv = new DataView(buf);
+  dv.setUint8(0, id);
+  dv.setFloat32(1, value, true);
+  return new Uint8Array(buf);
+}
+
+function decodeConfigRead(dv) {
+  if (dv.byteLength < CONFIG_PARAM_COUNT * 5)
+    throw new Error(`short config read (${dv.byteLength}B)`);
+  const out = {};
+  for (let i = 0; i < CONFIG_PARAM_COUNT; i++) {
+    const off = i * 5;
+    const id = dv.getUint8(off);
+    if (id !== i + 1)
+      throw new Error(`config read record ${i} carries id 0x${id.toString(16)}, expected 0x${(i+1).toString(16)}`);
+    out[CONFIG_PARAM_BY_ID[id]] = dv.getFloat32(off + 1, true);
+  }
+  return out;
+}
+
+// Signals: 5 batched 25 Hz samples per 5 Hz notification. See ble_protocol.h.
+function decodeSignals(dv) {
+  if (dv.byteLength < 6) throw new Error(`short signals (${dv.byteLength}B)`);
+  if (dv.getUint8(0) !== PROTOCOL_VERSION)
+    throw new Error(`signals: protocol v${dv.getUint8(0)}`);
+  const count = dv.getUint8(1);
+  if (count > 5) throw new Error(`signals: count ${count} > 5`);
+  if (dv.byteLength < 6 + count * 8)
+    throw new Error(`signals: ${dv.byteLength}B for ${count} samples`);
+  const ts = dv.getUint32(2, true);
+  const samples = [];
+  for (let i = 0; i < count; i++) {
+    const o = 6 + i * 8;
+    samples.push({
+      pulseFiltered: dv.getInt16(o, true) / 10,
+      gsrPhasic: dv.getInt16(o + 2, true) / 10,
+      pulseRaw: dv.getUint16(o + 4, true),
+      gsrRaw: dv.getUint16(o + 6, true),
+    });
+  }
+  return { ts, samples };
+}
+
+// Spectrum: 48 resonator bins, peak-normalised to 0..255. See ble_protocol.h.
+function decodeSpectrum(dv) {
+  if (dv.byteLength < 8) throw new Error(`short spectrum (${dv.byteLength}B)`);
+  if (dv.getUint8(0) !== PROTOCOL_VERSION)
+    throw new Error(`spectrum: protocol v${dv.getUint8(0)}`);
+  const bins = dv.getUint8(1);
+  if (bins > 48) throw new Error(`spectrum: ${bins} bins > 48`);
+  if (dv.byteLength < 8 + bins)
+    throw new Error(`spectrum: ${dv.byteLength}B for ${bins} bins`);
+  const peakBin = dv.getUint8(2);
+  const bpmLo = dv.getUint16(4, true) / 10;
+  const bpmHi = dv.getUint16(6, true) / 10;
+  const power = new Array(bins);
+  for (let i = 0; i < bins; i++) power[i] = dv.getUint8(8 + i);
+  return { bins, peakBin, bpmLo, bpmHi, power };
 }
 
 // --- LED mirror -------------------------------------------------------------
@@ -476,6 +683,7 @@ function frame(now) {
             i < litT ? 0.85 : 0);
     }
   }
+  drawSignals();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -528,6 +736,223 @@ function render(v) {
   }
 }
 
+// --- charts (-d7y) ---------------------------------------------------------
+// Each chart owns its stream: enabling the chart subscribes to the characteristic
+// AND tells the device to send it (CMD_SET_STREAMS), so an invisible chart costs
+// nothing on either end. The signals chart scrolls at the rAF rate; the spectrum
+// redraws only on packet (1 Hz).
+let signalsChr = null, spectrumChr = null;
+let streams = 0;   // mirror of the device's stream mask
+
+const SIG_CAP = 500;   // ~20 s at 25 Hz
+const sigBuf = [];     // {pulse, gsr} newest last
+let lastSpectrum = null;
+
+function sizeCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  // Only reallocate when the backing store size actually changed, so a re-layout
+  // does not blank an in-progress chart every frame.
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+  }
+  return { ctx: c.getContext("2d"), w, h, dpr };
+}
+
+function drawSignals() {
+  const c = $("signalCanvas");
+  if (!c || c.hidden || c.clientWidth === 0) return;
+  const { ctx, w, h, dpr } = sizeCanvas(c);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  if (sigBuf.length < 2) return;
+
+  // Each series is scaled to its own min/max in the visible window. Pulse filtered
+  // and GSR phasic live on unrelated scales; sharing one would bury the smaller.
+  // The trade-off is the two lines are not directly comparable -- which is why the
+  // legend says so rather than implying they are.
+  let pMin = Infinity, pMax = -Infinity, gMin = Infinity, gMax = -Infinity;
+  for (const s of sigBuf) {
+    if (s.pulse < pMin) pMin = s.pulse;
+    if (s.pulse > pMax) pMax = s.pulse;
+    if (s.gsr < gMin) gMin = s.gsr;
+    if (s.gsr > gMax) gMax = s.gsr;
+  }
+  const norm = (v, lo, hi) => {
+    if (hi - lo < 1e-6) return 0.5;
+    return (v - lo) / (hi - lo);
+  };
+  const pad = 3;
+  const plotH = h - pad * 2;
+  const n = sigBuf.length;
+  const x = i => (i / (n - 1)) * w;
+
+  const line = (key, lo, hi, colour) => {
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const px = x(i);
+      const py = pad + (1 - norm(sigBuf[i][key], lo, hi)) * plotH;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  };
+  line("pulse", pMin, pMax, css("--pulse-amber"));
+  line("gsr", gMin, gMax, css("--arousal-hi"));
+}
+
+function drawSpectrum() {
+  const c = $("spectrumCanvas");
+  if (!c || c.hidden || c.clientWidth === 0) return;
+  const { ctx, w, h, dpr } = sizeCanvas(c);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  if (!lastSpectrum) return;
+  const { bins, peakBin, bpmLo, bpmHi, power } = lastSpectrum;
+
+  const pad = 4;
+  const plotH = h - pad * 2;
+  const bw = w / bins;
+  for (let i = 0; i < bins; i++) {
+    const v = power[i] / 255;
+    const bh = v * plotH;
+    // Peak bin in the firmware hue, the rest dim -- the eye is meant to find the
+    // winner, and a flat bright bar chart hides the harmonic competition that is
+    // the whole point of plotting the bank.
+    ctx.fillStyle = (i === peakBin) ? css("--pulse-amber") : css("--ink-faint");
+    ctx.fillRect(i * bw + 0.5, pad + (plotH - bh), bw - 1, bh);
+  }
+
+  const peakBpm = bins > 1
+    ? bpmLo + (bpmHi - bpmLo) * peakBin / (bins - 1) : bpmLo;
+  $("spectrumPeak").textContent = `peak ${peakBpm.toFixed(0)} bpm`;
+}
+
+function pushSignalSamples(samples) {
+  for (const s of samples) {
+    sigBuf.push({ pulse: s.pulseFiltered, gsr: s.gsrPhasic });
+    if (sigBuf.length > SIG_CAP) sigBuf.shift();
+  }
+}
+
+// Apply the mirrored stream mask to the device. Idempotent: called whenever a
+// chart toggle changes the mask, and again on reconnect.
+async function applyStreams() {
+  if (!controlChr) return;
+  try { await send(CMD_SET_STREAMS, streams); }
+  catch (err) { /* send() already surfaces the error in the note */ }
+}
+
+async function setSignalChart(on) {
+  const card = $("signalCard");
+  const btn = $("signalToggle");
+  card.hidden = !on;
+  btn.setAttribute("aria-pressed", String(on));
+  btn.textContent = on ? "On" : "Off";
+  if (on) {
+    streams |= STREAM_SIGNALS;
+    if (signalsChr) await signalsChr.startNotifications();
+  } else {
+    streams &= ~STREAM_SIGNALS;
+    sigBuf.length = 0;
+    if (signalsChr) { try { await signalsChr.stopNotifications(); } catch {} }
+  }
+  await applyStreams();
+}
+
+async function setSpectrumChart(on) {
+  const card = $("spectrumCard");
+  const btn = $("spectrumToggle");
+  card.hidden = !on;
+  btn.setAttribute("aria-pressed", String(on));
+  btn.textContent = on ? "On" : "Off";
+  if (on) {
+    streams |= STREAM_SPECTRUM;
+    if (spectrumChr) await spectrumChr.startNotifications();
+  } else {
+    streams &= ~STREAM_SPECTRUM;
+    lastSpectrum = null;
+    if (spectrumChr) { try { await spectrumChr.stopNotifications(); } catch {} }
+    const c = $("spectrumCanvas"); if (c) { const cc = c.getContext("2d"); cc.clearRect(0, 0, c.width, c.height); }
+    $("spectrumPeak").textContent = "peak —";
+  }
+  await applyStreams();
+}
+
+// --- tuning (-x9q) ---------------------------------------------------------
+// Sliders write the Config characteristic (-pmw); a read on connect populates
+// them with live values. Writes go on `change` (release), not `input` (drag), to
+// match the brightness slider and avoid queueing a BLE write per pixel of drag --
+// the firmware coalesces rapid writes anyway, but the client queue is still finite.
+let configChr = null;
+
+function fmtConfig(param, value) {
+  const step = CONFIG_META[param].step;
+  return step < 1 ? value.toFixed(2) : value.toFixed(0);
+}
+
+function buildTuning() {
+  const body = $("tuneBody");
+  for (const g of CONFIG_GROUPS) {
+    const head = document.createElement("div");
+    head.className = "eyebrow tune-group-head";
+    head.textContent = g.name;
+    body.appendChild(head);
+    for (const p of g.params) {
+      const m = CONFIG_META[p];
+      const row = document.createElement("div");
+      row.className = "tune-row";
+      const label = document.createElement("label");
+      label.htmlFor = `cfg-${p}`;
+      label.textContent = m.label;
+      const input = document.createElement("input");
+      input.type = "range";
+      input.id = `cfg-${p}`;
+      input.dataset.cfg = p;
+      input.min = m.min; input.max = m.max; input.step = m.step;
+      input.disabled = true;
+      const out = document.createElement("output");
+      out.id = `cfg-${p}-out`;
+      input.oninput = () => { out.value = fmtConfig(p, Number(input.value)); };
+      input.onchange = () => sendConfig(p, Number(input.value));
+      row.append(label, input, out);
+      body.appendChild(row);
+    }
+  }
+}
+
+async function sendConfig(param, value) {
+  if (!configChr) return;
+  try {
+    await configChr.writeValue(encodeConfigWrite(param, value));
+  } catch (err) {
+    $("note").innerHTML = `<b>Config write failed.</b> ${err.message}`;
+  }
+}
+
+async function loadConfig() {
+  if (!configChr) return;
+  try {
+    const cfg = decodeConfigRead(await configChr.readValue());
+    for (const [p, v] of Object.entries(cfg)) {
+      const input = $(`cfg-${p}`);
+      if (!input) continue;
+      // Clamp into the slider's range: a stored value outside the useful range
+      // (but inside the device bounds) would otherwise snap the thumb to the end
+      // and report a different value on the next change. Clamping the thumb is
+      // honest about what the slider can express; the device keeps the real value.
+      input.value = Math.max(Number(input.min), Math.min(Number(input.max), v));
+      $(`cfg-${p}-out`).value = fmtConfig(p, v);
+    }
+  } catch (err) {
+    $("note").innerHTML = `<b>Config read failed.</b> ${err.message}`;
+  }
+}
+
 // --- connection -------------------------------------------------------------
 let controlChr = null;
 
@@ -538,7 +963,8 @@ function setLink(state, text) {
 
 function setControlsEnabled(on) {
   for (const el of document.querySelectorAll(
-      "[data-mode], #brightness, #recal")) {
+      "[data-mode], #brightness, #recal, #chartSignals, #chartSpectrum, " +
+      "#resetConfig, [data-cfg]")) {
     el.disabled = !on;
   }
 }
@@ -571,6 +997,18 @@ async function connect() {
       setLink("off", "Disconnected");
       setControlsEnabled(false);
       controlChr = null;
+      configChr = null;
+      signalsChr = null;
+      spectrumChr = null;
+      streams = 0;
+      sigBuf.length = 0;
+      lastSpectrum = null;
+      $("charts").hidden = true;
+      $("tuning").hidden = true;
+      $("signalCard").hidden = true;
+      $("spectrumCard").hidden = true;
+      $("chartSignals").setAttribute("aria-pressed", "false");
+      $("chartSpectrum").setAttribute("aria-pressed", "false");
       vitals = null;
       $("bpm").textContent = "--";
       $("verdict").textContent = "Bracelet disconnected";
@@ -589,6 +1027,28 @@ async function connect() {
 
     controlChr = await svc.getCharacteristic(CHR_CONTROL);
 
+    // The config characteristic is fetched up front so the tuning sliders can read
+    // and write it without re-resolving. Read happens once here to populate the
+    // sliders with live values rather than compiled defaults -- a device that was
+    // tuned in a previous session must show its real tunables.
+    configChr = await svc.getCharacteristic(CHR_CONFIG);
+
+    // Fetch the stream characteristics up front but do NOT subscribe: a chart is
+    // off until toggled, and the device must not spend cycles packing notifications
+    // nobody reads. setSignalChart/setSpectrumChart do both halves. Listeners are
+    // attached once here -- toggling only start/stopNotifications, so re-enabling a
+    // chart never stacks a second handler that would double-push samples.
+    signalsChr = await svc.getCharacteristic(CHR_SIGNALS);
+    signalsChr.addEventListener("characteristicvaluechanged", ev => {
+      try { pushSignalSamples(decodeSignals(ev.target.value).samples); }
+      catch (err) { $("verdict").innerHTML = `<strong>${err.message}</strong>`; }
+    });
+    spectrumChr = await svc.getCharacteristic(CHR_SPECTRUM);
+    spectrumChr.addEventListener("characteristicvaluechanged", ev => {
+      try { lastSpectrum = decodeSpectrum(ev.target.value); drawSpectrum(); }
+      catch (err) { $("verdict").innerHTML = `<strong>${err.message}</strong>`; }
+    });
+
     const vitalsChr = await svc.getCharacteristic(CHR_VITALS);
     vitalsChr.addEventListener("characteristicvaluechanged", ev => {
       try {
@@ -601,6 +1061,9 @@ async function connect() {
 
     setLink("live", device.name || "Bracelet");
     setControlsEnabled(true);
+    $("charts").hidden = false;
+    $("tuning").hidden = false;
+    await loadConfig();
     $("connect").textContent = "Disconnect";
     $("connect").onclick = () => device.gatt.disconnect();
   } catch (err) {
@@ -622,12 +1085,49 @@ for (const b of document.querySelectorAll("[data-mode]")) {
 $("brightness").oninput = ev => { $("brightnessOut").value = ev.target.value; };
 $("brightness").onchange = ev => send(CMD_SET_BRIGHTNESS, Number(ev.target.value));
 
+// Chart toggles. The segmented buttons open a chart (and its stream); the per-card
+// "On/Off" button closes it. Both funnel through setSignalChart/setSpectrumChart so
+// the stream mask and the notification subscription never disagree.
+$("chartSignals").onclick = async () => {
+  const on = $("signalCard").hidden;
+  $("chartSignals").setAttribute("aria-pressed", String(on));
+  await setSignalChart(on);
+};
+$("signalToggle").onclick = async () => {
+  $("chartSignals").setAttribute("aria-pressed", "false");
+  await setSignalChart(false);
+};
+$("chartSpectrum").onclick = async () => {
+  const on = $("spectrumCard").hidden;
+  $("chartSpectrum").setAttribute("aria-pressed", String(on));
+  await setSpectrumChart(on);
+};
+$("spectrumToggle").onclick = async () => {
+  $("chartSpectrum").setAttribute("aria-pressed", "false");
+  await setSpectrumChart(false);
+};
+
 $("recal").onclick = async () => {
   await send(CMD_RECALIBRATE_GSR);
   const b = $("recal");
   b.textContent = "Recalibrated";
   setTimeout(() => { b.textContent = "Recalibrate GSR"; }, 1600);
 };
+
+// Reset tunables to compiled defaults, then re-read so the sliders reflect the
+// device's actual state rather than guessing what "default" is on the client.
+// The device applies the reset on its next DSP tick (~40 ms), so a short wait
+// before the read avoids racing the apply.
+$("resetConfig").onclick = async () => {
+  await send(CMD_RESET_CONFIG);
+  await new Promise(r => setTimeout(r, 120));
+  await loadConfig();
+  const b = $("resetConfig");
+  b.textContent = "Reset";
+  setTimeout(() => { b.textContent = "Reset to defaults"; }, 1600);
+};
+
+buildTuning();
 
 if (!navigator.bluetooth) {
   $("note").innerHTML =

@@ -34,6 +34,12 @@ struct Handlers {
   void (*setStreams)(uint8_t mask) = nullptr;
   void (*resetBank)() = nullptr;
   void (*resetConfig)() = nullptr;
+  // Config characteristic (-pmw). getConfig fills values[CFG_PARAM_COUNT] in
+  // paramId order for a read; setConfigParam applies one live tunable and is
+  // expected to persist it. Either may be null, in which case the corresponding
+  // operation is a no-op (and a read returns the last packed value).
+  void (*getConfig)(float *values) = nullptr;
+  void (*setConfigParam)(uint8_t paramId, float value) = nullptr;
 };
 
 // Brings up the stack and starts advertising. Safe to call when ENABLE_BLE is 0, in

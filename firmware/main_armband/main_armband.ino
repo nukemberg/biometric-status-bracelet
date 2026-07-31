@@ -108,6 +108,22 @@ volatile bool gsrResetRequest = false;
 volatile bool bankResetRequest = false;
 volatile bool configResetRequest = false;
 
+// A BLE config write (-pmw) arrives on the NimBLE task but is applied on the DSP
+// task, exactly like the reset requests above: applyConfig() touches the trackers
+// and a torn read mid-update would be a state nobody tested. Only one pending
+// write is kept -- a slider drag sends many, and coalescing to the latest value is
+// the desired behaviour, not a loss.
+volatile bool configParamPending = false;
+uint8_t configParamId = 0;
+float configParamValue = 0.0f;
+portMUX_TYPE configMux = portMUX_INITIALIZER_UNLOCKED;
+// NVS writes are deferred until writes stop arriving for a couple of seconds, so a
+// slider drag retunes the device live but only hits flash once. NVS has limited
+// erase cycles and a flash write mid-sampling-window adds jitter; debouncing both
+// is cheap and removes both concerns. Set on the DSP task, read on the DSP task.
+bool configDirty = false;
+uint32_t configDirtyMs = 0;
+
 WearDetect wear;
 
 // Measured on core 0, where a NimBLE controller task will later compete for time.
@@ -163,6 +179,23 @@ void onResetConfig() {
   // mutation here is handled (gsrResetRequest, bankResetRequest) means there is one
   // pattern to reason about, not two.
   configResetRequest = true;
+}
+
+// Config characteristic (-pmw). Read pulls live values straight from cfg -- the
+// DSP task is the only writer and float reads are aligned, so a snapshot may mix
+// one just-changed field with the rest but never reads a torn byte. Write hands
+// the (id, value) to the DSP task under a short critical section so the pair stays
+// consistent, and the debounced save fires there once writes settle.
+void onGetConfig(float *values) {
+  ConfigStore::packValues(cfg, values);
+}
+
+void onSetConfigParam(uint8_t paramId, float value) {
+  portENTER_CRITICAL(&configMux);
+  configParamId = paramId;
+  configParamValue = value;
+  configParamPending = true;
+  portEXIT_CRITICAL(&configMux);
 }
 
 void onSetStreams(uint8_t mask) {
@@ -260,6 +293,41 @@ void TaskSensorDSP(void *pvParameters) {
         pulse.applyConfig(cfg);
         wear.applyConfig(cfg);
         Serial.println(F("[Config] reset to compiled defaults"));
+      }
+
+      // Apply a pending BLE config write. Lives here, not in the NimBLE callback, for
+      // the same torn-read reason as the reset above. A rejected value (unknown id or
+      // out of plausibility bounds) is logged and dropped rather than clamped -- a
+      // write the device cannot honour must not silently change something else.
+      if (configParamPending) {
+        uint8_t id; float val;
+        portENTER_CRITICAL(&configMux);
+        id = configParamId; val = configParamValue;
+        configParamPending = false;
+        portEXIT_CRITICAL(&configMux);
+        if (ConfigStore::applyParam(cfg, id, val)) {
+          pulse.applyConfig(cfg);
+          wear.applyConfig(cfg);
+          configDirty = true;
+          configDirtyMs = millis();
+          Serial.print(F("[Config] applied param 0x"));
+          Serial.print(id, HEX);
+          Serial.print(F(" = "));
+          Serial.println(val, 4);
+        } else {
+          Serial.print(F("[Config] rejected param 0x"));
+          Serial.print(id, HEX);
+          Serial.print(F(" = "));
+          Serial.println(val, 4);
+        }
+      }
+      // Debounced persist: apply live on every write, but only hit flash once writes
+      // have been quiet for a couple of seconds. A reset also clears the dirty flag
+      // (it erased NVS itself), so this never re-saves stale values after a reset.
+      if (configDirty && (millis() - configDirtyMs > 2000)) {
+        configDirty = false;
+        ConfigStore::save(cfg);
+        Serial.println(F("[Config] saved to NVS"));
       }
 
       pulse.update(xp);
@@ -534,6 +602,8 @@ void setup() {
   h.setStreams = onSetStreams;
   h.resetBank = onResetBank;
   h.resetConfig = onResetConfig;
+  h.getConfig = onGetConfig;
+  h.setConfigParam = onSetConfigParam;
   BleService::begin("Bracelet", h);
 }
 

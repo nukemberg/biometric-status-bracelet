@@ -57,6 +57,12 @@ CONFIG_PARAMS = {
     "conf_ref": 0x09,
     "slew_bpm_s": 0x0A,
 }
+# Inverse of CONFIG_PARAMS, built once. The read returns records in ascending
+# paramId order, so this is also the order decode_config_read yields.
+PARAM_BY_ID = {pid: name for name, pid in CONFIG_PARAMS.items()}
+CONFIG_PARAM_COUNT = len(CONFIG_PARAMS)
+CONFIG_WRITE_LEN = 5
+CONFIG_READ_LEN = CONFIG_PARAM_COUNT * CONFIG_WRITE_LEN
 
 
 class ProtocolError(ValueError):
@@ -197,6 +203,40 @@ def encode_config_write(param: str, value: float) -> bytes:
     return bytes([CONFIG_PARAMS[param]]) + struct.pack("<f", value)
 
 
+def decode_config_write(data: bytes) -> tuple[str, float]:
+    """Mirror of bleUnpackConfigWrite: one [paramId][f32] record."""
+    if len(data) < CONFIG_WRITE_LEN:
+        raise ProtocolError(f"config write: {len(data)} bytes, expected {CONFIG_WRITE_LEN}")
+    param_id = data[0]
+    if param_id == 0 or param_id > CONFIG_PARAM_COUNT:
+        raise ProtocolError(f"config write: unknown parameter id 0x{param_id:02X}")
+    value = struct.unpack_from("<f", data, 1)[0]
+    return PARAM_BY_ID[param_id], value
+
+
+def decode_config_read(data: bytes) -> dict[str, float]:
+    """Decode the CFG_PARAM_COUNT records a read returns, in paramId order.
+
+    Mirrors bleUnpackConfigRead: each record must carry the paramId its slot
+    implies, so a reorder is rejected rather than silently mislabelled.
+    """
+    if len(data) < CONFIG_READ_LEN:
+        raise ProtocolError(
+            f"config read: {len(data)} bytes, expected {CONFIG_READ_LEN}"
+        )
+    out: dict[str, float] = {}
+    for i in range(CONFIG_PARAM_COUNT):
+        off = i * CONFIG_WRITE_LEN
+        param_id = data[off]
+        if param_id != i + 1:
+            raise ProtocolError(
+                f"config read: record {i} carries id 0x{param_id:02X}, "
+                f"expected 0x{i + 1:02X}"
+            )
+        out[PARAM_BY_ID[param_id]] = struct.unpack_from("<f", data, off + 1)[0]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Fixtures shared with tools/ble_packet_test.cpp. If the C++ golden bytes change,
 # these must change with them -- that is the point.
@@ -206,6 +246,20 @@ FIXTURE_VITALS = bytes(
      0x12, 0x07, 0x41, 0x0A, 0x9B, 0x05, 0x3C, 0x00]
 )
 FIXTURE_CONFIG_WRITE = bytes([0x05, 0xCD, 0xCC, 0xCC, 0x3E])
+# Matches blePackConfigRead in tools/ble_packet_test.cpp::testConfigRead. Values
+# chosen for distinctive bit patterns so a swapped field is obviously wrong.
+FIXTURE_CONFIG_READ = (
+    bytes([0x01]) + struct.pack("<f", 1.0)    # hue_bpm_lo
+    + bytes([0x02]) + struct.pack("<f", 2.0)    # hue_bpm_hi
+    + bytes([0x03]) + struct.pack("<f", 3.0)    # hue_at_lo
+    + bytes([0x04]) + struct.pack("<f", 4.0)    # hue_at_hi
+    + bytes([0x05]) + struct.pack("<f", 0.25)   # pi_trust_min
+    + bytes([0x06]) + struct.pack("<f", 100.0)  # gsr_worn_min
+    + bytes([0x07]) + struct.pack("<f", 4000.0) # gsr_worn_max
+    + bytes([0x08]) + struct.pack("<f", 0.5)    # conf_gate
+    + bytes([0x09]) + struct.pack("<f", 0.9)    # conf_ref
+    + bytes([0x0A]) + struct.pack("<f", 8.0)    # slew_bpm_s
+)
 
 
 def selftest() -> int:
@@ -238,6 +292,27 @@ def selftest() -> int:
 
     check("config write encoding", encode_config_write("pi_trust_min", 0.40),
           FIXTURE_CONFIG_WRITE)
+    check("config write decode", decode_config_write(FIXTURE_CONFIG_WRITE)[0],
+          "pi_trust_min")
+    check("config write decode value", decode_config_write(FIXTURE_CONFIG_WRITE)[1],
+          0.40, 1e-6)
+
+    cfg = decode_config_read(FIXTURE_CONFIG_READ)
+    check("config read hue_bpm_lo", cfg["hue_bpm_lo"], 1.0)
+    check("config read pi_trust_min", cfg["pi_trust_min"], 0.25)
+    check("config read gsr_worn_max", cfg["gsr_worn_max"], 4000.0)
+    check("config read slew_bpm_s", cfg["slew_bpm_s"], 8.0)
+    check("config read record count", len(cfg), CONFIG_PARAM_COUNT)
+
+    # A reordered record must raise rather than mislabel a field.
+    bad = bytearray(FIXTURE_CONFIG_READ)
+    bad[0] = 0x02
+    try:
+        decode_config_read(bytes(bad))
+        print("  FAIL config read reorder: decoded a record whose id mismatches its slot")
+        failures += 1
+    except ProtocolError:
+        pass
 
     # A packet from another protocol version must raise, not decode.
     bad = bytearray(FIXTURE_VITALS)

@@ -2,6 +2,8 @@
 
 #include <Preferences.h>
 
+#include <ble_protocol.h>   // CFG_PARAM_COUNT, BleConfigParam ids
+
 namespace {
 
 // Bump if BraceletConfig's field set changes shape. A stored blob from an older
@@ -96,6 +98,24 @@ void resetToDefaults() {
   if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) return;
   prefs.clear();
   prefs.end();
+}
+
+// The FIELDS table is ordered to match the BleConfigParam enum (id = index + 1),
+// so a paramId resolves to a field without a second switch. A static_assert would
+// be the place to enforce that, but the two are in different headers; the
+// ble_packet_test config-read fixture covers the mapping end to end instead.
+bool applyParam(BraceletConfig &cfg, uint8_t paramId, float value) {
+  if (paramId == 0 || paramId > CFG_PARAM_COUNT) return false;
+  const FieldSpec &f = FIELDS[paramId - 1];
+  if (isnan(value) || value < f.lo || value > f.hi) return false;
+  cfg.*(f.field) = value;
+  return true;
+}
+
+void packValues(const BraceletConfig &cfg, float *out) {
+  for (size_t i = 0; i < FIELD_COUNT; i++) {
+    out[i] = cfg.*(FIELDS[i].field);
+  }
 }
 
 }  // namespace ConfigStore

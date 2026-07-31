@@ -20,6 +20,9 @@ Examples:
     tools/blectl.py cmd mode 1
     tools/blectl.py cmd brightness 200
     tools/blectl.py cmd recalibrate
+    tools/blectl.py config get
+    tools/blectl.py config set pi_trust_min 0.45
+    tools/blectl.py config reset
 """
 
 from __future__ import annotations
@@ -326,6 +329,64 @@ async def cmd_cmd(args) -> int:
     return 0
 
 
+async def cmd_config(args) -> int:
+    """Read all tunables, set one by name, or reset to compiled defaults.
+
+    The config characteristic (-pmw) carries the same [paramId][f32] record in both
+    directions: a write is one record, a read is all of them. A set takes effect on
+    the next DSP tick (~40 ms) and a read packs live state, so `set` then `get`
+    round-trips immediately; the debounced NVS save only affects reboot persistence.
+    """
+    if args.action == "reset":
+        dev = await find_device(args.name, args.timeout)
+        if dev is None:
+            print("bracelet not found", file=sys.stderr)
+            return 1
+        async with BleakClient(dev) as c:
+            await c.write_gatt_char(
+                proto.CHR_CONTROL,
+                proto.encode_control(proto.CMD_RESET_CONFIG), response=True)
+        print("reset config to compiled defaults")
+        return 0
+
+    if args.action == "set":
+        try:
+            payload = proto.encode_config_write(args.param, args.value)
+        except proto.ProtocolError as e:
+            print(e, file=sys.stderr)
+            return 2
+        dev = await find_device(args.name, args.timeout)
+        if dev is None:
+            print("bracelet not found", file=sys.stderr)
+            return 1
+        async with BleakClient(dev) as c:
+            await c.write_gatt_char(proto.CHR_CONFIG, payload, response=True)
+        print(f"set {args.param} = {args.value}")
+        return 0
+
+    # get
+    dev = await find_device(args.name, args.timeout)
+    if dev is None:
+        print("bracelet not found", file=sys.stderr)
+        return 1
+    async with BleakClient(dev) as c:
+        raw = await c.read_gatt_char(proto.CHR_CONFIG)
+    try:
+        cfg = proto.decode_config_read(bytes(raw))
+    except proto.ProtocolError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if args.csv:
+        print("name,value")
+        for name, value in cfg.items():
+            print(f"{name},{value}")
+    else:
+        w = max(len(n) for n in cfg)
+        for name, value in cfg.items():
+            print(f"{name:<{w}} = {value:g}")
+    return 0
+
+
 def cmd_selftest(args) -> int:
     return 1 if proto.selftest() else 0
 
@@ -367,12 +428,26 @@ def main() -> int:
     cm.add_argument("command", choices=sorted(CMDS))
     cm.add_argument("value", nargs="?", type=int)
 
+    cf = sub.add_parser("config", help="read/set tunables over BLE")
+    cf_sub = cf.add_subparsers(dest="action", required=True)
+    cf_get = cf_sub.add_parser("get", parents=[common], help="read all tunables")
+    cf_get.add_argument("--csv", action="store_true", help="write name,value rows")
+    cf_set = cf_sub.add_parser(
+        "set", parents=[common],
+        help=f"set one tunable (one of: {', '.join(sorted(proto.CONFIG_PARAMS))})")
+    cf_set.add_argument(
+        "param",
+        help=f"parameter name (one of: {', '.join(sorted(proto.CONFIG_PARAMS))})")
+    cf_set.add_argument("value", type=float)
+    cf_sub.add_parser("reset", parents=[common], help="restore compiled defaults")
+
     args = ap.parse_args()
 
     if args.cmd == "selftest":
         return cmd_selftest(args)
     handler = {"scan": cmd_scan, "info": cmd_info, "monitor": cmd_monitor,
-               "stream": cmd_stream, "spectrum": cmd_spectrum, "cmd": cmd_cmd}[args.cmd]
+               "stream": cmd_stream, "spectrum": cmd_spectrum, "cmd": cmd_cmd,
+               "config": cmd_config}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

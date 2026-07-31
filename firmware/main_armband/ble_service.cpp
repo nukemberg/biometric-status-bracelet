@@ -15,6 +15,7 @@ NimBLECharacteristic *infoChr = nullptr;
 NimBLECharacteristic *controlChr = nullptr;
 NimBLECharacteristic *signalsChr = nullptr;
 NimBLECharacteristic *spectrumChr = nullptr;
+NimBLECharacteristic *configChr = nullptr;
 bool connected = false;
 uint8_t streams = 0;
 BleService::Handlers handlers;
@@ -102,6 +103,40 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
 
 ControlCallbacks controlCallbacks;
 
+// The config characteristic carries the same [paramId][f32] record in both
+// directions: a write is one record applying a single tunable, a read is
+// CFG_PARAM_COUNT records returning all of them. The read is populated on demand
+// so it always reflects live state rather than a snapshot taken at some earlier
+// point -- a hue anchor changed moments ago must read back as changed.
+class ConfigCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic *chr, NimBLEConnInfo &) override {
+    if (!handlers.getConfig) return;
+    float values[CFG_PARAM_COUNT];
+    handlers.getConfig(values);
+    uint8_t buf[BLE_CONFIG_READ_LEN];
+    blePackConfigRead(buf, values);
+    chr->setValue(buf, sizeof buf);
+  }
+
+  void onWrite(NimBLECharacteristic *chr, NimBLEConnInfo &) override {
+    const std::string &v = chr->getValue();
+    uint8_t paramId = 0;
+    float value = 0.0f;
+    if (!bleUnpackConfigWrite(reinterpret_cast<const uint8_t *>(v.data()),
+                              v.size(), paramId, value)) {
+      Serial.println(F("[BLE] config write: malformed or unknown paramId"));
+      return;
+    }
+    if (handlers.setConfigParam) handlers.setConfigParam(paramId, value);
+    Serial.print(F("[BLE] config set param 0x"));
+    Serial.print(paramId, HEX);
+    Serial.print(F(" = "));
+    Serial.println(value, 4);
+  }
+};
+
+ConfigCallbacks configCallbacks;
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *s, NimBLEConnInfo &info) override {
     connected = true;
@@ -151,6 +186,10 @@ void begin(const char *deviceName, const Handlers &h) {
   controlChr = svc->createCharacteristic(
       BLE_CHR_CONTROL, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   controlChr->setCallbacks(&controlCallbacks);
+
+  configChr = svc->createCharacteristic(
+      BLE_CHR_CONFIG, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+  configChr->setCallbacks(&configCallbacks);
 
   infoChr = svc->createCharacteristic(BLE_CHR_INFO, NIMBLE_PROPERTY::READ);
   infoChr->setValue(buildInfoString().c_str());

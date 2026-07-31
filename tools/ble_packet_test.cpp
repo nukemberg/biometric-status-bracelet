@@ -298,6 +298,52 @@ static void testConfig() {
   }
 }
 
+static void testConfigRead() {
+  printf("config read\n");
+
+  // Values chosen so each float has a distinctive bit pattern, so a field swapped
+  // with its neighbour produces an obviously-wrong byte rather than a near-miss.
+  // 1.0f = 0x3F800000, 2.0f = 0x40000000, 0.25f = 0x3E800000, -1.0f = 0xBF800000.
+  float values[CFG_PARAM_COUNT] = {
+    1.0f, 2.0f, 3.0f, 4.0f, 0.25f,   // hue anchors + piTrustMin
+    100.0f, 4000.0f, 0.5f, 0.9f, 8.0f,  // gsr/conf/slew
+  };
+
+  uint8_t buf[BLE_CONFIG_READ_LEN];
+  size_t n = blePackConfigRead(buf, values);
+  checkEq("config read length", (long)n, BLE_CONFIG_READ_LEN);
+  checkEq("config read fits one 247-byte MTU", (long)BLE_CONFIG_READ_LEN <= 244, 1);
+
+  // Record 0: paramId 1, value 1.0f = 0x3F800000
+  // Record 4: paramId 5, value 0.25f = 0x3E800000
+  const uint8_t wantRec0[5] = {0x01, 0x00, 0x00, 0x80, 0x3F};
+  const uint8_t wantRec4[5] = {0x05, 0x00, 0x00, 0x80, 0x3E};
+  checkBytes("config read record 0", buf, wantRec0, 5);
+  checkBytes("config read record 4", buf + 4 * 5, wantRec4, 5);
+
+  float r[CFG_PARAM_COUNT];
+  if (!bleUnpackConfigRead(buf, n, r)) {
+    fail("config read unpack", "returned false");
+    return;
+  }
+  for (uint8_t i = 0; i < CFG_PARAM_COUNT; i++) {
+    checkNear("config read value", r[i], values[i], 1e-6f);
+  }
+
+  // A reordered record must be rejected rather than written into the wrong slot.
+  blePackConfigRead(buf, values);
+  buf[0] = 0x02;   // claims to be paramId 2 in slot 0
+  if (bleUnpackConfigRead(buf, n, r)) {
+    fail("config read reorder", "accepted a record whose paramId does not match its slot");
+  }
+
+  // A truncated read must be rejected.
+  blePackConfigRead(buf, values);
+  if (bleUnpackConfigRead(buf, BLE_CONFIG_READ_LEN - 1, r)) {
+    fail("config read short", "accepted a truncated config read");
+  }
+}
+
 static void testInvariants() {
   printf("invariants\n");
   // BLE_SPECTRUM_BINS == N_BINS is enforced by a static_assert at the top of this
@@ -305,6 +351,7 @@ static void testInvariants() {
   checkEq("spectrum bins match the resonator bank", (long)BLE_SPECTRUM_BINS, N_BINS);
   checkEq("spectrum fits one 247-byte MTU", (long)BLE_SPECTRUM_LEN <= 244, 1);
   checkEq("signals fits one 247-byte MTU", (long)BLE_SIGNALS_LEN <= 244, 1);
+  checkEq("config read fits one 247-byte MTU", (long)BLE_CONFIG_READ_LEN <= 244, 1);
   checkEq("vitals length", (long)BLE_VITALS_LEN, 18);
   checkEq("signals length", (long)BLE_SIGNALS_LEN, 46);
   checkEq("spectrum length", (long)BLE_SPECTRUM_LEN, 56);
@@ -317,6 +364,7 @@ int main() {
   testSignals();
   testSpectrum();
   testConfig();
+  testConfigRead();
   testInvariants();
 
   printf("\n");

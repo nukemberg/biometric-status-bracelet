@@ -50,6 +50,11 @@
 #define BLE_SPECTRUM_LEN   (8 + BLE_SPECTRUM_BINS)       // 56
 #define BLE_CONTROL_MAXLEN 4
 #define BLE_CONFIG_WRITE_LEN 5
+// Read returns every tunable as CFG_PARAM_COUNT records of [paramId u8][f32], in
+// ascending paramId order. Same record shape as the write, so a client shares one
+// decoder between the two directions. Fits a single 247-byte ATT MTU with room to
+// spare, so a read is never fragmented into packets a decoder would reject.
+#define BLE_CONFIG_READ_LEN   (CFG_PARAM_COUNT * BLE_CONFIG_WRITE_LEN)   // 50
 
 // Vitals flag bits
 #define VF_WORN            0x01
@@ -347,5 +352,39 @@ static inline bool bleUnpackConfigWrite(const uint8_t *b, size_t len,
   paramId = blegetU8(b, 0);
   if (paramId == 0 || paramId > CFG_PARAM_COUNT) return false;
   value = bleBitsFloat(blegetU32(b, 1));
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Config read -- CFG_PARAM_COUNT records of [paramId u8][f32], one per tunable.
+//
+// The caller passes the values in paramId order: values[0] is CFG_HUE_BPM_LO,
+// values[CFG_PARAM_COUNT-1] is CFG_SLEW_BPM_S. The packer writes the paramId for
+// each record itself, so the wire format is self-describing and a decoder can
+// cross-check that record i really does carry id i+1.
+//
+// ble_protocol.h stays free of BraceletConfig (that lives in dsp.h) by design --
+// the mapping between a paramId and a BraceletConfig field is owned by the
+// firmware's config_store, which is the one place that already knows it.
+// ---------------------------------------------------------------------------
+static inline size_t blePackConfigRead(uint8_t *b, const float *values) {
+  for (uint8_t i = 0; i < CFG_PARAM_COUNT; i++) {
+    size_t o = (size_t)i * BLE_CONFIG_WRITE_LEN;
+    bleputU8(b, o, (uint8_t)(i + 1));
+    bleputU32(b, o + 1, bleFloatBits(values[i]));
+  }
+  return BLE_CONFIG_READ_LEN;
+}
+
+static inline bool bleUnpackConfigRead(const uint8_t *b, size_t len, float *values) {
+  if (len < BLE_CONFIG_READ_LEN) return false;
+  for (uint8_t i = 0; i < CFG_PARAM_COUNT; i++) {
+    size_t o = (size_t)i * BLE_CONFIG_WRITE_LEN;
+    // Records must arrive in ascending paramId order. A reorder would otherwise
+    // silently write the wrong tunable into the wrong slot -- exactly the
+    // plausible-wrong-number failure this library exists to prevent.
+    if (blegetU8(b, o) != (uint8_t)(i + 1)) return false;
+    values[i] = bleBitsFloat(blegetU32(b, o + 1));
+  }
   return true;
 }
