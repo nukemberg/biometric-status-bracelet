@@ -19,6 +19,8 @@ firmware/
   dsp_v2/         bench sketch, streams computed values as CSV, no LEDs
   raw_streamer/   500 Hz raw capture for spectral ground truth
   sensor_test/    hardware bring-up smoke test
+webapp/
+  index.html        Web Bluetooth dashboard (Chrome on Android)
 tools/
   dsp_v2_sim.py       Python reference implementation of the pipeline
   dsp_v2_parity.sh    proves the shipped C++ matches that reference

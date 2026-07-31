@@ -1,0 +1,637 @@
+<!--
+  Bracelet — Web Bluetooth dashboard.
+
+  Self-contained by requirement: no build step, no CDN, no external fonts. Served
+  over HTTPS from GitHub Pages because Web Bluetooth refuses to run on an insecure
+  origin. Chrome on Android (or desktop Chrome); Safari does not implement the API.
+
+  Wire format mirrors libraries/BraceletProtocol/src/ble_protocol.h, which is the
+  specification. Its golden-byte fixtures in tools/ble_packet_test.cpp are the
+  authority for this decoder too.
+
+  Design note: the trust state is deliberately loud. This device has been measured
+  reporting a confident 91 BPM with nothing attached to it, so when it says the pulse
+  is not believable the whole readout drains of colour rather than showing a small
+  badge next to a number that looks fine.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E0D0C">
+<title>Bracelet</title>
+
+<style>
+  :root {
+    /* Palette taken from the firmware's own hue anchors rather than picked. */
+    --bg:        #0E0D0C;   /* unlit LED substrate, warm black */
+    --surface:   #171512;
+    --hairline:  #262220;
+    --ink:       #EDE6DA;   /* warm white, the colour of diffused LED light */
+    --ink-dim:   #7A7168;
+    --ink-faint: #4A443E;
+
+    --pulse-amber: #FFB300;  /* firmware hue 48  @ 50 BPM  */
+    --pulse-red:   #FF2A00;  /* firmware hue 0   @ 140 BPM */
+    --pulse-pink:  #FF0080;  /* firmware hue 229 @ 190 BPM */
+    --arousal-lo:  #2ED573;
+    --arousal-hi:  #A855F7;
+    --thermal-lo:  #2E7BFF;
+    --thermal-hi:  #FF3B1F;
+    --untrusted:   #5A544C;
+
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", "DejaVu Sans Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+
+  body {
+    min-height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  main { max-width: 30rem; margin: 0 auto; padding: 1.25rem 1.1rem 3rem; }
+
+  /* ---- structural ------------------------------------------------------ */
+  .eyebrow {
+    font-size: 0.625rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .wordmark { font-size: 0.8rem; letter-spacing: 0.34em; text-transform: uppercase; }
+
+  .link {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-size: 0.625rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .dot {
+    width: 0.4rem; height: 0.4rem; border-radius: 50%;
+    background: var(--ink-faint);
+    transition: background 0.3s;
+  }
+  .link[data-state="live"] .dot { background: var(--arousal-lo); }
+  .link[data-state="live"]      { color: var(--ink); }
+
+  /* ---- signature: a mirror of the 21 LEDs ------------------------------ */
+  .device { padding: 1.6rem 0 1.3rem; }
+
+  .strip {
+    display: grid;
+    grid-template-columns: 4.4rem 1fr;
+    align-items: center;
+    gap: 0.55rem 0.85rem;
+  }
+  .strip + .strip { margin-top: 0.7rem; }
+
+  .leds { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.4rem; }
+
+  .led {
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: #000;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    /* Colour and glow are set per-frame from JS. */
+  }
+
+  .strip-name {
+    font-size: 0.5625rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-faint); text-align: right;
+  }
+
+  /* ---- headline reading ------------------------------------------------ */
+  .reading { padding: 1.4rem 0 1.2rem; border-top: 1px solid var(--hairline); }
+
+  .bpm-row { display: flex; align-items: baseline; gap: 0.6rem; }
+
+  .bpm {
+    font-size: 4.5rem;
+    line-height: 0.86;
+    font-weight: 300;
+    letter-spacing: -0.045em;
+    color: var(--reading-colour, var(--ink));
+    transition: color 0.5s;
+  }
+  .bpm-unit { font-size: 0.625rem; letter-spacing: 0.2em; color: var(--ink-dim); }
+
+  .verdict {
+    margin-top: 0.85rem;
+    font-size: 0.625rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .verdict strong { color: var(--reading-colour, var(--ink)); font-weight: 400; }
+
+  .meter {
+    margin-top: 0.55rem; height: 2px; background: var(--hairline);
+    position: relative; overflow: hidden;
+  }
+  .meter i {
+    position: absolute; inset: 0 auto 0 0; width: 0;
+    background: var(--reading-colour, var(--ink));
+    transition: width 0.4s, background 0.5s;
+  }
+
+  /* ---- secondary values ------------------------------------------------ */
+  .rows { border-top: 1px solid var(--hairline); }
+
+  .row {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr auto;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--hairline);
+    font-size: 0.8125rem;
+  }
+  .row-label {
+    font-size: 0.5625rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .row-value { text-align: right; color: var(--ink); }
+  .row-track { height: 2px; background: var(--hairline); position: relative; }
+  .row-track i {
+    position: absolute; inset: 0 auto 0 0; width: 0;
+    background: var(--row-colour, var(--ink-dim));
+    transition: width 0.35s;
+  }
+
+  /* ---- controls -------------------------------------------------------- */
+  .controls { padding-top: 1.5rem; }
+
+  .control + .control { margin-top: 1.3rem; }
+  .control > .eyebrow { display: block; margin-bottom: 0.6rem; }
+
+  .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
+
+  button {
+    font-family: inherit;
+    font-size: 0.6875rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    padding: 0.75rem 0.5rem;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+  }
+  button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-faint); }
+  button[aria-pressed="true"] {
+    color: var(--bg); background: var(--ink); border-color: var(--ink);
+  }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  button:focus-visible { outline: 2px solid var(--pulse-amber); outline-offset: 2px; }
+
+  .wide { width: 100%; }
+
+  input[type="range"] {
+    width: 100%; margin: 0; height: 1.75rem;
+    -webkit-appearance: none; appearance: none; background: transparent;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 2px; background: var(--hairline);
+  }
+  input[type="range"]::-moz-range-track { height: 2px; background: var(--hairline); }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 0.9rem; height: 0.9rem; border-radius: 50%;
+    background: var(--ink); margin-top: -0.4rem;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 0.9rem; height: 0.9rem; border: 0; border-radius: 50%;
+    background: var(--ink);
+  }
+  input[type="range"]:focus-visible { outline: 2px solid var(--pulse-amber); }
+
+  .slider-row { display: flex; align-items: center; gap: 1rem; }
+  .slider-row output { font-size: 0.8125rem; width: 2.5rem; text-align: right; }
+
+  /* ---- states ---------------------------------------------------------- */
+  .note {
+    margin-top: 1.5rem; padding-top: 1.1rem;
+    border-top: 1px solid var(--hairline);
+    font-size: 0.6875rem; line-height: 1.6; color: var(--ink-dim);
+  }
+  .note b { color: var(--ink); font-weight: 400; }
+
+  [hidden] { display: none !important; }
+
+  /* Untrusted: the readout drains rather than wearing a badge. */
+  body[data-trust="none"] { --reading-colour: var(--untrusted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: 0.01ms !important; animation: none !important; }
+  }
+</style>
+
+<main>
+  <header class="bar">
+    <div class="wordmark">Bracelet</div>
+    <div class="link" id="link" data-state="off">
+      <span class="dot"></span><span id="linkText">Not connected</span>
+    </div>
+  </header>
+
+  <!-- Signature: the physical device, mirrored. Hold your wrist next to it. -->
+  <section class="device" aria-label="Bracelet display">
+    <div class="strip">
+      <div class="strip-name">Pulse</div>
+      <div class="leds" id="ledsPulse"></div>
+    </div>
+    <div class="strip">
+      <div class="strip-name">Arousal</div>
+      <div class="leds" id="ledsArousal"></div>
+    </div>
+    <div class="strip">
+      <div class="strip-name">Thermal</div>
+      <div class="leds" id="ledsThermal"></div>
+    </div>
+  </section>
+
+  <section class="reading">
+    <div class="bpm-row">
+      <div class="bpm" id="bpm">--</div>
+      <div class="bpm-unit">bpm</div>
+    </div>
+    <div class="verdict" id="verdict">Waiting for a bracelet</div>
+    <div class="meter"><i id="confBar"></i></div>
+  </section>
+
+  <section class="rows">
+    <div class="row">
+      <div class="row-label">Arousal</div>
+      <div class="row-track" style="--row-colour: var(--arousal-hi)">
+        <i id="arousalBar"></i>
+      </div>
+      <div class="row-value" id="arousal">--</div>
+    </div>
+    <div class="row">
+      <div class="row-label">Perfusion</div>
+      <div class="row-track" style="--row-colour: var(--pulse-amber)">
+        <i id="perfBar"></i>
+      </div>
+      <div class="row-value" id="perf">--</div>
+    </div>
+    <div class="row">
+      <div class="row-label">Skin</div>
+      <div class="row-track" style="--row-colour: var(--thermal-hi)">
+        <i id="tempBar"></i>
+      </div>
+      <div class="row-value" id="temp">--</div>
+    </div>
+    <div class="row">
+      <div class="row-label">GSR raw</div>
+      <div></div>
+      <div class="row-value" id="gsr">--</div>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="control">
+      <span class="eyebrow">Display</span>
+      <div class="segmented" role="group" aria-label="Display mode">
+        <button type="button" data-mode="0" aria-pressed="false" disabled>Panel</button>
+        <button type="button" data-mode="1" aria-pressed="false" disabled>Hype</button>
+        <button type="button" data-mode="2" aria-pressed="false" disabled>Stealth</button>
+      </div>
+    </div>
+
+    <div class="control">
+      <span class="eyebrow">Brightness</span>
+      <div class="slider-row">
+        <input type="range" id="brightness" min="0" max="255" value="60"
+               aria-label="Brightness" disabled>
+        <output id="brightnessOut">60</output>
+      </div>
+    </div>
+
+    <div class="control">
+      <button type="button" class="wide" id="recal" disabled>Recalibrate GSR</button>
+    </div>
+
+    <div class="control">
+      <button type="button" class="wide" id="connect">Connect bracelet</button>
+    </div>
+  </section>
+
+  <p class="note" id="note">
+    Needs Chrome on Android. Safari does not support Web Bluetooth.
+  </p>
+</main>
+
+<script>
+"use strict";
+
+// --- protocol (mirrors libraries/BraceletProtocol/src/ble_protocol.h) --------
+const PROTOCOL_VERSION = 1;
+const SVC      = "a1b20001-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_VITALS  = "a1b20002-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_CONTROL = "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_INFO    = "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70";
+
+const VITALS_LEN = 18;
+const CMD_SET_MODE = 0x01, CMD_SET_BRIGHTNESS = 0x02, CMD_RECALIBRATE_GSR = 0x03;
+
+function decodeVitals(dv) {
+  if (dv.byteLength < VITALS_LEN) throw new Error(`short packet (${dv.byteLength}B)`);
+  const version = dv.getUint8(0);
+  if (version !== PROTOCOL_VERSION) {
+    throw new Error(`bracelet speaks protocol v${version}, this page speaks ` +
+                    `v${PROTOCOL_VERSION}`);
+  }
+  const flags = dv.getUint8(1);
+  return {
+    bpm:        dv.getUint16(2, true) / 10,
+    confidence: dv.getUint8(4) / 255,
+    arousal:    dv.getUint8(5) / 255,
+    perfusion:  dv.getUint16(6, true) / 100,
+    gsrRaw:     dv.getUint16(8, true),
+    pulseRaw:   dv.getUint16(10, true),
+    tempC:      dv.getInt16(12, true) / 100,
+    gsrTonic:   dv.getUint16(14, true),
+    brightness: dv.getUint8(16),
+    mode:       (flags & 0x18) >> 3,
+    worn:         !!(flags & 0x01),
+    pulseTrusted: !!(flags & 0x02),
+    strobe:       !!(flags & 0x04),
+  };
+}
+
+// --- LED mirror -------------------------------------------------------------
+const SEG = 7;
+const leds = {
+  pulse:   buildStrip("ledsPulse"),
+  arousal: buildStrip("ledsArousal"),
+  thermal: buildStrip("ledsThermal"),
+};
+
+function buildStrip(id) {
+  const host = document.getElementById(id);
+  const out = [];
+  for (let i = 0; i < SEG; i++) {
+    const el = document.createElement("div");
+    el.className = "led";
+    host.appendChild(el);
+    out.push(el);
+  }
+  return out;
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function mixHex(c1, c2, t) {
+  const p = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16),
+                  parseInt(h.slice(5, 7), 16)];
+  const [r1, g1, b1] = p(c1), [r2, g2, b2] = p(c2);
+  return [Math.round(lerp(r1, r2, t)), Math.round(lerp(g1, g2, t)),
+          Math.round(lerp(b1, b2, t))];
+}
+
+const css = n => getComputedStyle(document.documentElement)
+  .getPropertyValue(n).trim();
+
+/* The firmware ramps hue 48 -> 0 -> 229 across 50..190 BPM. Reproduced here as
+   two colour stops rather than FastLED's rainbow curve, so this is an
+   approximation of the strip's colour, not a colorimetric match. */
+function pulseColour(bpm) {
+  const t = Math.max(0, Math.min(1, (bpm - 50) / (190 - 50)));
+  const mid = (140 - 50) / (190 - 50);
+  return t <= mid
+    ? mixHex(css("--pulse-amber"), css("--pulse-red"), t / mid)
+    : mixHex(css("--pulse-red"), css("--pulse-pink"), (t - mid) / (1 - mid));
+}
+
+function paint(el, rgb, level) {
+  if (level <= 0.01) {
+    el.style.background = "#000";
+    el.style.boxShadow = "inset 0 0 0 1px var(--hairline)";
+    return;
+  }
+  const [r, g, b] = rgb;
+  const a = Math.min(1, level);
+  el.style.background = `rgb(${r} ${g} ${b} / ${a})`;
+  el.style.boxShadow = `0 0 ${8 * a}px rgb(${r} ${g} ${b} / ${0.55 * a})`;
+}
+
+// --- render loop ------------------------------------------------------------
+let vitals = null;
+let phase = 0;
+let lastFrame = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000);
+  lastFrame = now;
+
+  if (vitals) {
+    /* Advances at the reported rate. This is NOT phase-locked to the bracelet --
+       beat phase is not in the vitals packet — so it beats at the right tempo but
+       not necessarily on the same beat. */
+    phase += 2 * Math.PI * (vitals.bpm / 60) * dt;
+    phase %= 2 * Math.PI;
+
+    const trusted = vitals.pulseTrusted && vitals.worn;
+    const colour = trusted ? pulseColour(vitals.bpm)
+                           : mixHex(css("--untrusted"), css("--untrusted"), 0);
+    for (let i = 0; i < SEG; i++) {
+      const dist = Math.abs(i - 3);
+      const p = phase - dist * 0.35;
+      let v = 0.5 * (1 + Math.cos(p));
+      v = v * v; v = v * v;                       // ^4, same envelope as firmware
+      paint(leds.pulse[i], colour, trusted ? v : v * 0.32);
+    }
+
+    const lit = Math.round(vitals.arousal * SEG);
+    for (let i = 0; i < SEG; i++) {
+      paint(leds.arousal[i],
+            mixHex(css("--arousal-lo"), css("--arousal-hi"), i / (SEG - 1)),
+            i < lit ? 0.92 : 0);
+    }
+
+    const t = Math.max(0, Math.min(1, (vitals.tempC - 25) / (34 - 25)));
+    const litT = Math.max(1, Math.round(t * SEG));
+    for (let i = 0; i < SEG; i++) {
+      paint(leds.thermal[i],
+            mixHex(css("--thermal-lo"), css("--thermal-hi"), i / (SEG - 1)),
+            i < litT ? 0.85 : 0);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// --- readout ----------------------------------------------------------------
+const $ = id => document.getElementById(id);
+
+function render(v) {
+  vitals = v;
+
+  const trusted = v.pulseTrusted && v.worn;
+  document.body.dataset.trust = trusted ? "ok" : "none";
+  document.documentElement.style.setProperty(
+    "--reading-colour",
+    trusted ? `rgb(${pulseColour(v.bpm).join(" ")})` : css("--untrusted"));
+
+  $("bpm").textContent = trusted ? v.bpm.toFixed(1) : "--";
+
+  let verdict;
+  if (!v.worn) {
+    verdict = "<strong>Not on a wrist.</strong> Readings are noise.";
+  } else if (!v.pulseTrusted) {
+    verdict = "<strong>Searching.</strong> Pulse signal too weak to believe.";
+  } else {
+    verdict = `Tracking at <strong>${(v.confidence * 100).toFixed(0)}%</strong> ` +
+              `confidence`;
+  }
+  $("verdict").innerHTML = verdict;
+  $("confBar").style.width = `${Math.min(100, (v.confidence / 0.18) * 100)}%`;
+
+  $("arousal").textContent = `${(v.arousal * 100).toFixed(0)}%`;
+  $("arousalBar").style.width = `${v.arousal * 100}%`;
+
+  $("perf").textContent = `${v.perfusion.toFixed(2)}%`;
+  $("perfBar").style.width = `${Math.min(100, (v.perfusion / 2) * 100)}%`;
+
+  $("temp").textContent = `${v.tempC.toFixed(1)} C`;
+  $("tempBar").style.width =
+    `${Math.max(0, Math.min(100, ((v.tempC - 25) / 9) * 100))}%`;
+
+  $("gsr").textContent = v.gsrRaw;
+
+  for (const b of document.querySelectorAll("[data-mode]")) {
+    b.setAttribute("aria-pressed", String(Number(b.dataset.mode) === v.mode));
+  }
+  const slider = $("brightness");
+  if (document.activeElement !== slider) {
+    slider.value = v.brightness;
+    $("brightnessOut").value = v.brightness;
+  }
+}
+
+// --- connection -------------------------------------------------------------
+let controlChr = null;
+
+function setLink(state, text) {
+  $("link").dataset.state = state;
+  $("linkText").textContent = text;
+}
+
+function setControlsEnabled(on) {
+  for (const el of document.querySelectorAll(
+      "[data-mode], #brightness, #recal")) {
+    el.disabled = !on;
+  }
+}
+
+async function send(cmd, arg) {
+  if (!controlChr) return;
+  const payload = arg === undefined ? Uint8Array.of(cmd) : Uint8Array.of(cmd, arg);
+  try {
+    await controlChr.writeValue(payload);
+  } catch (err) {
+    $("note").innerHTML = `<b>Command failed.</b> ${err.message}`;
+  }
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    $("note").innerHTML =
+      "<b>This browser cannot talk to the bracelet.</b> Web Bluetooth needs " +
+      "Chrome on Android or desktop. Safari and Firefox do not support it.";
+    return;
+  }
+
+  try {
+    setLink("off", "Choosing…");
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }],
+    });
+
+    device.addEventListener("gattserverdisconnected", () => {
+      setLink("off", "Disconnected");
+      setControlsEnabled(false);
+      controlChr = null;
+      vitals = null;
+      $("bpm").textContent = "--";
+      $("verdict").textContent = "Bracelet disconnected";
+      $("connect").textContent = "Connect bracelet";
+    });
+
+    setLink("off", "Connecting…");
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+
+    try {
+      const info = await (await svc.getCharacteristic(CHR_INFO)).readValue();
+      $("note").innerHTML = `<b>${device.name || "Bracelet"}</b> — ` +
+        new TextDecoder().decode(info);
+    } catch { /* Info is a convenience; a missing one must not block the link. */ }
+
+    controlChr = await svc.getCharacteristic(CHR_CONTROL);
+
+    const vitalsChr = await svc.getCharacteristic(CHR_VITALS);
+    vitalsChr.addEventListener("characteristicvaluechanged", ev => {
+      try {
+        render(decodeVitals(ev.target.value));
+      } catch (err) {
+        $("verdict").innerHTML = `<strong>${err.message}</strong>`;
+      }
+    });
+    await vitalsChr.startNotifications();
+
+    setLink("live", device.name || "Bracelet");
+    setControlsEnabled(true);
+    $("connect").textContent = "Disconnect";
+    $("connect").onclick = () => device.gatt.disconnect();
+  } catch (err) {
+    if (err.name === "NotFoundError") {
+      setLink("off", "Not connected");
+      return;                                   // the chooser was dismissed
+    }
+    setLink("off", "Not connected");
+    $("note").innerHTML = `<b>Could not connect.</b> ${err.message}`;
+  }
+}
+
+$("connect").onclick = connect;
+
+for (const b of document.querySelectorAll("[data-mode]")) {
+  b.onclick = () => send(CMD_SET_MODE, Number(b.dataset.mode));
+}
+
+$("brightness").oninput = ev => { $("brightnessOut").value = ev.target.value; };
+$("brightness").onchange = ev => send(CMD_SET_BRIGHTNESS, Number(ev.target.value));
+
+$("recal").onclick = async () => {
+  await send(CMD_RECALIBRATE_GSR);
+  const b = $("recal");
+  b.textContent = "Recalibrated";
+  setTimeout(() => { b.textContent = "Recalibrate GSR"; }, 1600);
+};
+
+if (!navigator.bluetooth) {
+  $("note").innerHTML =
+    "<b>This browser cannot talk to the bracelet.</b> Web Bluetooth needs Chrome " +
+    "on Android or desktop. Safari and Firefox do not support it.";
+}
+</script>
