@@ -11,16 +11,18 @@ processing design, and what turned out to be true (and false) about these sensor
 
 ```
 libraries/
-  BraceletDSP/    the pulse, GSR and wear-detection engines — shared by every
-                  consumer, and deliberately free of Arduino and BLE types
+  BraceletDSP/       the pulse, GSR and wear-detection engines — shared by every
+                     consumer, and deliberately free of Arduino and BLE types
+  BraceletProtocol/  BLE wire format, shared by the firmware, CLI and web app
 firmware/
   main_armband/   production firmware — LEDs, tasks, wear gating
   dsp_v2/         bench sketch, streams computed values as CSV, no LEDs
   raw_streamer/   500 Hz raw capture for spectral ground truth
   sensor_test/    hardware bring-up smoke test
 tools/
-  dsp_v2_sim.py     Python reference implementation of the pipeline
-  dsp_v2_parity.sh  proves the shipped C++ matches that reference
+  dsp_v2_sim.py       Python reference implementation of the pipeline
+  dsp_v2_parity.sh    proves the shipped C++ matches that reference
+  ble_packet_test.sh  asserts the BLE wire layout against golden byte fixtures
 samples/          captures with known ground truth, used as regression cases
 ```
 
@@ -38,6 +40,9 @@ uv run python tools/dsp_v2_sim.py samples/bio4.csv --compare
 
 # confirm the firmware C++ and the Python reference still agree
 tools/dsp_v2_parity.sh samples/bio2.log
+
+# assert the BLE wire layout (run after touching BraceletProtocol)
+tools/ble_packet_test.sh
 ```
 
 `samples/bio4.csv` is the primary regression case: 226 s of good contact with a ground
