@@ -145,6 +145,38 @@ struct JitterMonitor {
 #define DEFAULT_BPM     78.0f
 
 // ============================================================================
+// RUNTIME-TUNABLE CONFIG
+// ============================================================================
+// Everything here can be changed after boot (currently via the button/BLE control
+// path; -1jc). Deliberately excludes anything that sizes a fixed array or is baked
+// into the wire protocol -- N_BINS, BPM_MIN/MAX, BANK_TAU and the sample-rate
+// constants stay compile-time #defines, because BLE_SPECTRUM_BINS is static_assert'd
+// equal to N_BINS and every array in PulseTracker is sized by it. Runtime-resizing
+// the bank would need dynamic allocation this project has no reason to want.
+//
+// The #defines above remain the single source of truth for the numeric defaults, so
+// existing comments that reference them by name stay accurate, and this struct is
+// purely additive: nothing that already worked changes behaviour by existing.
+struct BraceletConfig {
+  // LED gradient anchors (main_armband.ino's pulseHueFor). Kept here rather than in
+  // the sketch so the whole tunable set has one shape, even though dsp.h itself does
+  // not read these.
+  float hueBpmLo   = 50.0f;
+  float hueBpmHi   = 190.0f;
+  float hueAtLo    = 48.0f;
+  float hueAtHi    = -27.0f;
+
+  float piTrustMin  = PI_TRUST_MIN;
+  float gsrWornMin  = (float)GSR_WORN_MIN;
+  float gsrWornMax  = (float)GSR_WORN_MAX;
+  float confGate    = CONF_GATE;
+  float confRef     = CONF_REF;
+  float slewBpmPerS = SLEW_BPM_PER_S;
+
+  static BraceletConfig defaults() { return BraceletConfig(); }
+};
+
+// ============================================================================
 // PPG RESONATOR BANK (rate + confidence + beat phase from one structure)
 // ============================================================================
 struct PulseTracker {
@@ -160,6 +192,19 @@ struct PulseTracker {
 
   float acPower;                         // EMA of y^2, for the perfusion index
   float bpm, confidence, phase;
+
+  // Runtime-tunable; see BraceletConfig. Defaulted in begin(), changed via
+  // applyConfig() without needing to re-run begin() (which would also reset the
+  // bank -- a config change should not throw away accumulated tracking).
+  float confGate = CONF_GATE;
+  float confRef = CONF_REF;
+  float slewBpmPerS = SLEW_BPM_PER_S;
+
+  void applyConfig(const BraceletConfig &cfg) {
+    confGate = cfg.confGate;
+    confRef = cfg.confRef;
+    slewBpmPerS = cfg.slewBpmPerS;
+  }
 
   // Index of the winning bin at the last estimate(). Published with the spectrum so a
   // client can mark the peak without re-deriving it and possibly disagreeing.
@@ -279,9 +324,9 @@ struct PulseTracker {
     float beatIm = resIm[best] * rotRe[best] - resRe[best] * rotIm[best];
     phase = atan2f(beatIm, beatRe);
 
-    if (confidence >= CONF_GATE) {
-      float weight = fminf(1.0f, confidence / CONF_REF);
-      float limit = SLEW_BPM_PER_S * weight * dtSeconds;
+    if (confidence >= confGate) {
+      float weight = fminf(1.0f, confidence / confRef);
+      float limit = slewBpmPerS * weight * dtSeconds;
       bpm += clampf(rawBpm - bpm, -limit, limit);
     }
   }
@@ -366,10 +411,21 @@ struct WearDetect {
   // pulse is not believable.
   bool pulseTrusted = false;
 
+  // Runtime-tunable; see BraceletConfig.
+  float piTrustMin = PI_TRUST_MIN;
+  float gsrWornMin = (float)GSR_WORN_MIN;
+  float gsrWornMax = (float)GSR_WORN_MAX;
+
+  void applyConfig(const BraceletConfig &cfg) {
+    piTrustMin = cfg.piTrustMin;
+    gsrWornMin = cfg.gsrWornMin;
+    gsrWornMax = cfg.gsrWornMax;
+  }
+
   bool update(uint16_t gsrRaw, float perfusion, uint32_t now) {
     justReleased = false;
-    pulseTrusted = perfusion >= PI_TRUST_MIN;
-    bool contact = (gsrRaw >= GSR_WORN_MIN && gsrRaw <= GSR_WORN_MAX);
+    pulseTrusted = perfusion >= piTrustMin;
+    bool contact = ((float)gsrRaw >= gsrWornMin && (float)gsrRaw <= gsrWornMax);
 
     if (contact == worn) {
       candidate = worn;              // steady; nothing pending

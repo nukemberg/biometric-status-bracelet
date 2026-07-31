@@ -66,6 +66,12 @@ bool bmeConnected = false;
 // trackers on a host and prove them equal to the Python reference.
 #include <dsp.h>
 #include "ble_service.h"
+#include "config_store.h"
+
+// Live tunables. Loaded from NVS at boot (falling back to compiled defaults),
+// applied to the trackers and to the LED hue anchors below, and updated by the
+// Config BLE characteristic (-pmw, not yet wired) and CMD_RESET_CONFIG.
+BraceletConfig cfg;
 
 struct BiometricData {
   uint16_t pulseRaw = 0;
@@ -100,6 +106,7 @@ volatile bool gsrResetRequest = false;
 // Handed to the DSP task rather than applied inline: clearing the bank from another
 // task while update() is midway through the resonator loop would corrupt it.
 volatile bool bankResetRequest = false;
+volatile bool configResetRequest = false;
 
 WearDetect wear;
 
@@ -148,6 +155,15 @@ void onSetBrightness(uint8_t value) {
 void onRecalibrateGsr() { gsrResetRequest = true; }
 
 void onResetBank() { bankResetRequest = true; }
+
+void onResetConfig() {
+  // Deferred to the DSP task loop rather than touching the trackers directly from
+  // the NimBLE task -- applyConfig() only writes a few floats so a torn read is
+  // unlikely to matter, but staying consistent with how every other cross-task
+  // mutation here is handled (gsrResetRequest, bankResetRequest) means there is one
+  // pattern to reason about, not two.
+  configResetRequest = true;
+}
 
 void onSetStreams(uint8_t mask) {
   // Rising edge on the signals stream: drop whatever is still sitting in the ring
@@ -236,6 +252,14 @@ void TaskSensorDSP(void *pvParameters) {
       if (bankResetRequest) {
         bankResetRequest = false;
         pulse.clearBank();
+      }
+      if (configResetRequest) {
+        configResetRequest = false;
+        ConfigStore::resetToDefaults();
+        cfg = BraceletConfig::defaults();
+        pulse.applyConfig(cfg);
+        wear.applyConfig(cfg);
+        Serial.println(F("[Config] reset to compiled defaults"));
       }
 
       pulse.update(xp);
@@ -341,11 +365,9 @@ void advanceBeatPhase(float bpm, float resonatorPhase, float confidence, float d
 //  2. It removes the band-edge tuning problem entirely -- there are no edges.
 //
 // FastLED hue is a uint8 that wraps, so a single descending ramp walks
-// orange -> red -> through zero -> pink without any special-casing.
-#define HUE_BPM_LO      50.0f     // anchor: slow resting pulse
-#define HUE_BPM_HI      190.0f    // anchor: peak dancing rate
-#define HUE_AT_LO       48.0f     // orange/yellow
-#define HUE_AT_HI       (-27.0f)  // wraps to 229 = pink; crosses pure red at ~140 BPM
+// orange -> red -> through zero -> pink without any special-casing. Anchors are
+// runtime-tunable (cfg.hueBpmLo etc, see BraceletConfig in dsp.h) rather than
+// #defines, so BLE config writes can retune the gradient without a reflash.
 
 // Visual-only smoothing. The beat animation follows BPM instantly via the phase
 // oscillator; only the colour is damped, so responsiveness is unaffected.
@@ -353,9 +375,9 @@ void advanceBeatPhase(float bpm, float resonatorPhase, float confidence, float d
 float displayBpm = DEFAULT_BPM;
 
 static inline uint8_t pulseHueFor(float bpm) {
-  float f = (bpm - HUE_BPM_LO) / (HUE_BPM_HI - HUE_BPM_LO);
+  float f = (bpm - cfg.hueBpmLo) / (cfg.hueBpmHi - cfg.hueBpmLo);
   f = clampf(f, 0.0f, 1.0f);
-  float h = HUE_AT_LO + f * (HUE_AT_HI - HUE_AT_LO);
+  float h = cfg.hueAtLo + f * (cfg.hueAtHi - cfg.hueAtLo);
   int wrapped = ((int)lroundf(h)) & 0xFF;   // uint8 wraparound gives red -> pink
   return (uint8_t)wrapped;
 }
@@ -485,8 +507,11 @@ void setup() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
+  cfg = ConfigStore::load();
   pulse.begin();
+  pulse.applyConfig(cfg);
   gsr.begin();
+  wear.applyConfig(cfg);
 
   FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.setBrightness(bio.brightness);
@@ -508,6 +533,7 @@ void setup() {
   h.recalibrateGsr = onRecalibrateGsr;
   h.setStreams = onSetStreams;
   h.resetBank = onResetBank;
+  h.resetConfig = onResetConfig;
   BleService::begin("Bracelet", h);
 }
 
