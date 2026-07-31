@@ -150,6 +150,20 @@ void onRecalibrateGsr() { gsrResetRequest = true; }
 void onResetBank() { bankResetRequest = true; }
 
 void onSetStreams(uint8_t mask) {
+  // Rising edge on the signals stream: drop whatever is still sitting in the ring
+  // buffer from a previous session rather than draining it as if it were fresh.
+  // Without this, re-enabling the stream after it had been off for a while sent one
+  // batch of minutes-old samples followed by current ones -- same timestamp jump a
+  // consumer would (correctly) flag as a gap, except the data itself was stale, not
+  // missing. There is nothing to lose: an unread sample was already just static.
+  static uint8_t lastMask = 0;
+  if ((mask & STREAM_SIGNALS) && !(lastMask & STREAM_SIGNALS)) {
+    portENTER_CRITICAL(&sigMux);
+    sigTail = sigHead;
+    portEXIT_CRITICAL(&sigMux);
+  }
+  lastMask = mask;
+
   Serial.print(F("[BLE] streams now 0x"));
   Serial.println(mask, HEX);
 }

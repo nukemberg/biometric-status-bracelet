@@ -25,6 +25,7 @@ tools/
   dsp_v2_sim.py       Python reference implementation of the pipeline
   dsp_v2_parity.sh    proves the shipped C++ matches that reference
   ble_packet_test.sh  asserts the BLE wire layout against golden byte fixtures
+  dsp_v2_sim.py --from-ble  re-runs the resonator bank against a blectl stream capture
   capture.py          reads serial output from the board
   jitter_notch.py     how much sampling jitter degrades the 50 Hz notch
   blectl.py           read the bracelet over BLE, no USB tether

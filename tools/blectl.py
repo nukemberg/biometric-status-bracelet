@@ -236,6 +236,15 @@ async def cmd_spectrum(args) -> int:
         return 1
 
     count = 0
+    csv = open(args.csv, "w") if args.csv else None
+    if csv:
+        # One row per spectrum: time, peak bpm, peak bin, then the 48 raw bin powers
+        # (0-255, peak-normalised -- see ble_protocol.h). Not physical units, but
+        # consistent frame to frame, which is what matters for watching a harmonic
+        # gain on a fundamental over time.
+        csv.write("time_s,peak_bpm,peak_bin," +
+                  ",".join(f"bin{i}" for i in range(proto.SPECTRUM_BINS)) + "\n")
+    started = time.monotonic()
 
     def on_spectrum(_h, data: bytearray):
         nonlocal count
@@ -245,6 +254,16 @@ async def cmd_spectrum(args) -> int:
             print(f"  {e}", file=sys.stderr)
             return
         count += 1
+        if csv:
+            t = time.monotonic() - started
+            row = [f"{t:.2f}", f"{sp.peak_bpm:.1f}", str(sp.peak_bin)]
+            row += [str(v) for v in sp.bins]
+            # Pad to the fixed column count if the device ever reports fewer bins,
+            # so every row has the same width regardless of what any one packet said.
+            while len(row) < 3 + proto.SPECTRUM_BINS:
+                row.append("")
+            csv.write(",".join(row) + "\n")
+            csv.flush()
         if args.bars:
             print(f"\npeak {sp.peak_bpm:.1f} BPM (bin {sp.peak_bin})")
             for i, v in enumerate(sp.bins):
@@ -273,6 +292,8 @@ async def cmd_spectrum(args) -> int:
                 proto.encode_control(proto.CMD_SET_STREAMS, 0), response=True)
     except KeyboardInterrupt:
         pass
+    if csv:
+        csv.close()
     print(f"# {count} spectra", file=sys.stderr)
     return 0
 
@@ -340,6 +361,7 @@ def main() -> int:
     sp.add_argument("--seconds", type=float, default=0.0)
     sp.add_argument("--bars", action="store_true", help="full bar chart per spectrum")
     sp.add_argument("--floor", type=int, default=20, help="hide bins below this")
+    sp.add_argument("--csv", help="write a 48-column CSV, one row per spectrum")
 
     cm = sub.add_parser("cmd", parents=[common], help="send a control command")
     cm.add_argument("command", choices=sorted(CMDS))

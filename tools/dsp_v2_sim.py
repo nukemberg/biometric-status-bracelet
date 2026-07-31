@@ -148,6 +148,28 @@ class PulseTracker:
 
         return y
 
+    def update_filtered(self, y):
+        """Feed a sample that has ALREADY been through the baseline/lowpass chain --
+        the pulse_filtered field of a BLE Signals packet, computed on-device by this
+        same PulseTracker. Used to re-run the resonator bank offline against a live
+        BLE capture, which has no raw 500 Hz signal to decimate and filter (the
+        device only streams the already-decimated, already-filtered 25 Hz value).
+        Bypasses the baseline/lowpass stage in update() above; everything from the
+        resonator bank onward is identical, so estimate() behaves the same either way.
+        """
+        self.filtered = y
+        self.energy += self.a_energy * (y * y - self.energy)
+        for k in range(N_BINS):
+            r = self.rot[k] * self.step[k]
+            self.rot[k] = r
+            self.res[k] += self.a_bank * (y * r - self.res[k])
+        self.n += 1
+        if self.n % RENORM_INTERVAL == 0:
+            for k in range(N_BINS):
+                m = abs(self.rot[k])
+                if m > 0.0:
+                    self.rot[k] /= m
+
     def estimate(self, dt_s):
         """Called at render rate, not per sample. Updates bpm/confidence/phase."""
         best = 0
@@ -417,6 +439,46 @@ def summarise(path, rows, t, p, g, settle_s=20.0):
     print(f"dsp_v2  time saturated   {100.0 * sum(1 for v in arous if v > 0.95) / len(arous):.1f} %")
 
 
+def run_ble(path, report_hz=1.0):
+    """Re-analyse a `tools/blectl.py stream` capture.
+
+    That capture has no raw 500 Hz signal -- the device only streams pulse_filtered,
+    the value AFTER its own baseline/lowpass chain (tools/blectl.py stream --csv
+    header: timestamp_ms,pulse_filtered,gsr_phasic,pulse_raw,gsr_raw). So this feeds
+    pulse_filtered straight into the resonator bank via update_filtered(), skipping
+    the front-end filtering stage that already happened on-device, rather than
+    re-decimating and re-filtering raw ADC counts the way `run()` above does for a
+    raw_streamer capture.
+
+    This exists mainly to look at the same harmonic-capture behaviour documented in
+    DESIGN.md 2.3 from a live BLE capture instead of an offline one -- the same
+    question tools/blectl.py spectrum answers on-device in real time, from a
+    different angle.
+    """
+    pulse = PulseTracker()
+    rows = []
+    last_report = None
+    with open(path) as fh:
+        header = fh.readline().strip().split(",")
+        try:
+            ts_i = header.index("timestamp_ms")
+            pf_i = header.index("pulse_filtered")
+        except ValueError:
+            sys.exit(f"{path}: not a blectl stream CSV (header: {header})")
+        for line in fh:
+            parts = line.strip().split(",")
+            if len(parts) <= max(ts_i, pf_i):
+                continue
+            ts_ms = float(parts[ts_i])
+            y = float(parts[pf_i])
+            pulse.update_filtered(y)
+            bpm, conf, phase = pulse.estimate(1.0 / FS)
+            if last_report is None or ts_ms - last_report >= 1000.0 / report_hz:
+                last_report = ts_ms
+                rows.append((ts_ms / 1000.0, bpm, conf, phase))
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("logs", nargs="+", help="raw_streamer CSV capture(s)")
@@ -424,7 +486,19 @@ def main():
                     help="print the summary table instead of the per-second trace")
     ap.add_argument("--rate", type=float, default=1.0,
                     help="trace output rate in Hz (default 1)")
+    ap.add_argument("--from-ble", action="store_true",
+                    help="input is a `blectl.py stream --csv` capture, not a raw "
+                         "500 Hz raw_streamer capture -- see run_ble()")
     args = ap.parse_args()
+
+    if args.from_ble:
+        for path in args.logs:
+            rows = run_ble(path, report_hz=args.rate)
+            print(f"# {path} (BLE stream re-analysis, {len(rows)} rows)")
+            print("time_s,bpm,confidence,phase_rad")
+            for t, bpm, conf, phase in rows:
+                print(f"{t:.1f},{bpm:.1f},{conf:.2f},{phase:.2f}")
+        return
 
     for path in args.logs:
         t, p, g, rows = run(path, report_hz=args.rate, verbose=not args.compare)
