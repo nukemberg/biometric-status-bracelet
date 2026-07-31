@@ -25,6 +25,8 @@ tools/
   ble_packet_test.sh  asserts the BLE wire layout against golden byte fixtures
   capture.py          reads serial output from the board
   jitter_notch.py     how much sampling jitter degrades the 50 Hz notch
+  blectl.py           read the bracelet over BLE, no USB tether
+  bracelet_protocol.py  Python side of the BLE wire format
 samples/          captures with known ground truth, used as regression cases
 ```
 
@@ -72,6 +74,15 @@ tail -f session.log
 ```
 
 Stop the logger before flashing — it holds the port.
+
+Or skip USB entirely and read over BLE, which neither reboots the board nor requires
+the wearer to sit next to the laptop:
+
+```sh
+tools/blectl.py selftest              # decode the C++ golden fixtures, no device needed
+tools/blectl.py scan
+tools/blectl.py monitor --csv vitals.csv
+```
 
 ## Build
 
