@@ -73,7 +73,8 @@ struct BiometricData {
   float phase = 0.0;        // radians, beat phase from the winning resonator
 
   float perfusion = 0.0;    // percent, cardiac AC / DC -- PPG contact quality
-  bool worn = false;        // both sensors report skin contact
+  bool worn = false;        // GSR electrodes report skin contact
+  bool pulseTrusted = false;// PPG strong enough to believe the rate
 
   uint16_t gsrRaw = 0;
   float gsrTonic = 0.0;
@@ -171,6 +172,7 @@ void TaskSensorDSP(void *pvParameters) {
       bio.gsrRaw = lastGsr;
       bio.perfusion = pi;
       bio.worn = worn;
+      bio.pulseTrusted = wear.pulseTrusted;
       bioDataUnlock();
     }
 
@@ -284,6 +286,7 @@ void renderBiometricPanel() {
   float tempC = bio.tempC;
   uint8_t mode = bio.displayMode;
   bool worn = bio.worn;
+  bool pulseTrusted = bio.pulseTrusted;
   bioDataUnlock();
 
   FastLED.clear();
@@ -296,17 +299,26 @@ void renderBiometricPanel() {
   // SEGMENT 1: CARDIAC HEARTBEAT PULSE (LEDs 0 to 6)
   // Phase-locked thumping wave; smooth at frame rate, never stalls
   // --------------------------------------------------------------------------
-  // Warm gradient: orange/yellow when slow, deep red as it climbs, pink at the top.
-  uint8_t pulseHue = pulseHueFor(displayBpm);
+  if (!pulseTrusted) {
+    // Worn, but the PPG is too weak to believe the rate -- at this signal quality the
+    // tracker has been measured reporting 113 BPM against a true 88. Show a slow
+    // colourless sweep instead of a confident wrong colour. The other two segments
+    // stay live because GSR and temperature are unaffected.
+    uint8_t v = 10 + (uint8_t)(30.0f * (0.5f * (1.0f + sinf((float)millis() * 0.004f))));
+    for (int i = 0; i < 7; i++) leds[i] = CHSV(0, 0, v);
+  } else {
+    // Warm gradient: orange/yellow when slow, deep red as it climbs, pink at the top.
+    uint8_t pulseHue = pulseHueFor(displayBpm);
 
-  // Low confidence desaturates toward white rather than freezing the animation, so
-  // a poor sensor contact reads as "unsure" instead of as a dead panel.
-  uint8_t sat = 120 + (uint8_t)(135.0f * fminf(1.0f, confidence / CONF_REF));
+    // Low confidence desaturates toward white rather than freezing the animation, so
+    // a marginal signal reads as "unsure" instead of as a dead panel.
+    uint8_t sat = 120 + (uint8_t)(135.0f * fminf(1.0f, confidence / CONF_REF));
 
-  for (int i = 0; i < 7; i++) {
-    float dist = fabsf((float)i - 3.0f);
-    uint8_t v = beatEnvelope(beatPhase - dist * WAVE_LAG);
-    leds[i] = CHSV(pulseHue, sat, v);
+    for (int i = 0; i < 7; i++) {
+      float dist = fabsf((float)i - 3.0f);
+      uint8_t v = beatEnvelope(beatPhase - dist * WAVE_LAG);
+      leds[i] = CHSV(pulseHue, sat, v);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -419,6 +431,7 @@ void loop() {
     float tempC = bio.tempC;
     uint8_t mode = bio.displayMode;
     bool worn = bio.worn;
+    bool pulseTrusted = bio.pulseTrusted;
     float pi = bio.perfusion;
     uint16_t gsrRaw = bio.gsrRaw;
     bioDataUnlock();
@@ -426,11 +439,9 @@ void loop() {
     if (!worn) {
       Serial.print(F("[Standby] Not worn | PerfIdx: "));
       Serial.print(pi, 2);
-      Serial.print(F("% (need "));
-      Serial.print(PI_WORN_MIN, 2);
-      Serial.print(F(") | RawGSR: "));
+      Serial.print(F("% | RawGSR: "));
       Serial.print(gsrRaw);
-      Serial.print(F(" (need "));
+      Serial.print(F(" (worn needs "));
       Serial.print(GSR_WORN_MIN);
       Serial.print(F("-"));
       Serial.print(GSR_WORN_MAX);
@@ -446,7 +457,8 @@ void loop() {
       Serial.print(tempC, 1);
       Serial.print(F(" C | PerfIdx: "));
       Serial.print(pi, 2);
-      Serial.print(F("% | Mode: "));
+      Serial.print(pulseTrusted ? F("% (trusted)") : F("% (SEARCHING)"));
+      Serial.print(F(" | Mode: "));
       Serial.println(mode);
     }
 

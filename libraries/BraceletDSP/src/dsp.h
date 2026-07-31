@@ -59,18 +59,36 @@
 //  1. GSR electrodes. Skin between the pads reads 1175-1509 counts across every
 //     capture taken so far (bio2/bio3/bio4); an open circuit rails to ~3900-4095.
 //     That is a 2.6x margin, so it makes a solid hard gate.
-//  2. PPG perfusion index (cardiac AC amplitude / DC level), the standard optical
-//     contact metric. Measured 1.60% on bio4 (good contact) and 0.40% on bio2 (poor
-//     but genuinely worn). The floor sits below both so it cannot false-negative on
-//     a real wearer; it is published on serial so it can be tightened once we have a
-//     calibrated not-worn capture.
+//  2. PPG perfusion index (cardiac AC / DC) -- used to judge whether the *pulse* is
+//     trustworthy, NOT whether the device is worn. See below.
 //
-// Confidence is deliberately NOT used here: an unworn board was observed reporting
+// Measured perfusion(), same formula as the runtime metric:
+//
+//     bio4.csv  good contact, worn   median 0.678  (min 0.482)
+//     bio2.log  poor contact, worn   median 0.180  (p10 0.151, p90 0.306)
+//     bench     nothing attached     0.17 - 0.20
+//
+// Poor-but-worn and not-worn are indistinguishable. No threshold separates them, so
+// perfusion cannot gate wear: any value that rejects an empty sensor also blanks the
+// panel on a real wearer with mediocre contact. An earlier PI_WORN_MIN of 0.15 was
+// derived from a *different* formula (scipy band-pass p2p / mean) and sat below the
+// unworn floor, so the PPG half of the gate never rejected anything.
+//
+// GSR separates cleanly and does the gating alone: worn 1175-1509 across every
+// capture, open circuit 3507-4095, nothing in between.
+//
+// Confidence is deliberately used for neither: an unworn board was observed reporting
 // confidence 0.29, as high as a good worn signal, because the bank locks onto noise
 // just as happily as onto a pulse.
 #define GSR_WORN_MIN    500       // below this the pin is shorted or unpowered
 #define GSR_WORN_MAX    3000      // above this the electrodes are open
-#define PI_WORN_MIN     0.15f     // percent; conservative, see note above
+
+// Above this the cardiac signal is strong enough to believe the rate. Set between
+// bio2's p90 (0.306) and bio4's minimum (0.482). Below it the device still knows it
+// is worn -- GSR says so -- but the pulse segment shows a searching state rather than
+// a confident number, because at bio2 signal quality the tracker reported 113 BPM
+// against a true 88.
+#define PI_TRUST_MIN    0.40f
 #define WEAR_ON_MS      2000      // contact must hold this long before we trust it
 #define WEAR_OFF_MS     5000      // and drop out this long before we let go
 
@@ -294,10 +312,15 @@ struct WearDetect {
   // pulse engine into a class that only needs to answer one yes/no question.
   bool justReleased = false;
 
+  // Whether the PPG signal is strong enough to trust the rate. Independent of the
+  // wear decision: the bracelet stays lit on GSR alone, but says so honestly when the
+  // pulse is not believable.
+  bool pulseTrusted = false;
+
   bool update(uint16_t gsrRaw, float perfusion, uint32_t now) {
     justReleased = false;
-    bool contact = (gsrRaw >= GSR_WORN_MIN && gsrRaw <= GSR_WORN_MAX) &&
-                   (perfusion >= PI_WORN_MIN);
+    pulseTrusted = perfusion >= PI_TRUST_MIN;
+    bool contact = (gsrRaw >= GSR_WORN_MIN && gsrRaw <= GSR_WORN_MAX);
 
     if (contact == worn) {
       candidate = worn;              // steady; nothing pending

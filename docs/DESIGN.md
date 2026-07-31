@@ -210,25 +210,46 @@ range used.
 - **Confidence desaturation.** Low confidence washes the pulse segment toward white
   instead of freezing it — poor contact reads as "unsure", not as a dead panel.
 
-### 3.5 Wear detection
+### 3.5 Wear detection and pulse trust
 
-Two independent gates, because each covers the other's blind spot:
+These are two separate questions, answered by two different signals, because the obvious
+metric turns out to answer only one of them.
 
-1. **GSR in range.** Skin between the pads reads 1175–1509 counts across every capture;
-   an open circuit rails to ~3900–4095. Window: 500–3000.
-2. **PPG perfusion index** (cardiac AC / DC) above 0.15 %. Measured 1.60 % on good
-   contact, 0.40 % on poor-but-worn.
+**Wear is decided by GSR alone.** Skin between the pads reads 1175–1509 counts across
+every capture; an open circuit reads 3507–4095. Nothing lands in between, so the window
+500–3000 separates cleanly. Asymmetric dwell: 2 s to claim contact, 5 s to release. On
+release the resonator bank is cleared so the next wearer never sees the previous one's
+rate.
 
-Asymmetric dwell: 2 s to claim contact, 5 s to release. On release the resonator bank is
-cleared so the next wearer never sees the previous one's rate.
+**Perfusion index cannot gate wear.** Measured with the runtime formula
+(`2.83·√(EMA y²)/baseline`):
 
-When not worn the panel shows a slow indigo breath and no vitals — the device does not
-invent a heart rate for an empty room.
+| | median | range |
+|---|---|---|
+| `bio4.csv` good contact, worn | 0.678 | min 0.482 |
+| `bio2.log` poor contact, worn | 0.180 | p10 0.151, p90 0.306 |
+| bench, nothing attached | ~0.19 | 0.17–0.20 |
 
-**Calibration caveat:** the 0.15 % floor is derived from steady-state captures. In real
-use the perfusion index is dominated by motion and reaches 5–31 %, so the floor is very
-conservative. It cannot false-negative on a real wearer, but it is a weak discriminator in
-the other direction. Only the GSR gate is calibrated against measured not-worn data.
+Poor-but-worn and not-worn are indistinguishable. No threshold separates them: any value
+that rejects an empty sensor also blanks the panel on a real wearer with mediocre contact.
+
+An earlier `PI_WORN_MIN` of 0.15 % was set from a *different* calculation (scipy band-pass
+p2p ÷ mean, giving 0.40 % / 1.60 %) and therefore sat **below** the unworn floor — the PPG
+half of the gate never rejected anything, and only GSR was doing real work. The lesson is
+that a threshold must be calibrated against the metric the firmware actually computes.
+
+**Perfusion instead decides whether the rate is believable.** Above `PI_TRUST_MIN` (0.40 %,
+between bio2's p90 and bio4's minimum) the pulse segment shows its colour gradient. Below
+it the device still knows it is worn — GSR says so — but the pulse segment shows a
+colourless sweep instead of a confident wrong number. At bio2 signal quality the tracker
+was measured reporting 113 BPM against a true 88, so a "searching" state is the honest
+display. GSR and temperature segments stay live throughout, and the auto-strobe will not
+fire on an untrusted rate.
+
+**Known blind spot:** perfusion measures cardiac-band amplitude, and cannot tell a strong
+pulse from strong motion. A handled or shaken board reaches 1.7 % and reads as trusted
+while the tracker walks steadily up through implausible rates. Motion rejection is not
+solved.
 
 ---
 
