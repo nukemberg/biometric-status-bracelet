@@ -97,6 +97,9 @@ PulseTracker pulse;
 GsrTracker gsr;
 
 volatile bool gsrResetRequest = false;
+// Handed to the DSP task rather than applied inline: clearing the bank from another
+// task while update() is midway through the resonator loop would corrupt it.
+volatile bool bankResetRequest = false;
 
 WearDetect wear;
 
@@ -104,6 +107,54 @@ WearDetect wear;
 // Reported every 10 s and then reset, so each line describes a fresh window.
 JitterMonitor jitter;
 portMUX_TYPE jitterMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ============================================================================
+// SIGNAL STREAM RING BUFFER
+// ============================================================================
+// The DSP task produces one sample per 25 Hz tick; the render loop drains five at a
+// time and notifies at 5 Hz. Sized well above that so a late drain loses nothing --
+// dropping samples silently would put gaps in a stream whose entire purpose is
+// offline analysis, and the timestamps would still look continuous.
+#define SIGBUF_LEN 32
+BleSignalSample sigBuf[SIGBUF_LEN];
+uint32_t sigTimestamp[SIGBUF_LEN];
+volatile uint8_t sigHead = 0;   // written by the DSP task
+volatile uint8_t sigTail = 0;   // written by the render loop
+volatile uint32_t sigDropped = 0;
+portMUX_TYPE sigMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ============================================================================
+// BLE CONTROL HANDLERS
+// ============================================================================
+// These run on the NimBLE task, not the render loop, so they take the same lock the
+// render loop does and defer anything that must land on a DSP sample boundary --
+// exactly as the button handler already does.
+namespace {
+
+void onSetMode(uint8_t mode) {
+  bioDataLock();
+  bio.displayMode = mode;
+  bioDataUnlock();
+}
+
+void onSetBrightness(uint8_t value) {
+  bioDataLock();
+  bio.brightness = value;
+  bioDataUnlock();
+  // FastLED keeps its own copy; the render loop does not read bio.brightness.
+  FastLED.setBrightness(value);
+}
+
+void onRecalibrateGsr() { gsrResetRequest = true; }
+
+void onResetBank() { bankResetRequest = true; }
+
+void onSetStreams(uint8_t mask) {
+  Serial.print(F("[BLE] streams now 0x"));
+  Serial.println(mask, HEX);
+}
+
+}  // namespace
 
 // ============================================================================
 // BUTTON INTERACTION HANDLER (polled from the render loop at ~60 Hz)
@@ -168,9 +219,35 @@ void TaskSensorDSP(void *pvParameters) {
         gsrResetRequest = false;
         gsr.reset(xg);
       }
+      if (bankResetRequest) {
+        bankResetRequest = false;
+        pulse.clearBank();
+      }
 
       pulse.update(xp);
       gsr.update(xg);
+
+      // Only pay for stream collection when a client is actually subscribed.
+      if (BleService::streamMask() & STREAM_SIGNALS) {
+        portENTER_CRITICAL(&sigMux);
+        uint8_t next = (uint8_t)((sigHead + 1) % SIGBUF_LEN);
+        if (next == sigTail) {
+          // Full: discard the OLDEST so the stream stays current. Dropping the
+          // newest instead would keep the data contiguous but drifting ever further
+          // behind real time, which looks like clean data and is not.
+          sigTail = (uint8_t)((sigTail + 1) % SIGBUF_LEN);
+          sigDropped++;
+        }
+        {
+          sigBuf[sigHead].pulseFiltered = pulse.filtered;
+          sigBuf[sigHead].gsrPhasic = gsr.smooth - gsr.tonic;
+          sigBuf[sigHead].pulseRaw = lastPulse;
+          sigBuf[sigHead].gsrRaw = lastGsr;
+          sigTimestamp[sigHead] = millis();
+          sigHead = next;
+        }
+        portEXIT_CRITICAL(&sigMux);
+      }
 
       float pi = pulse.perfusion();
       bool worn = wear.update(lastGsr, pi, (uint32_t)millis());
@@ -411,13 +488,21 @@ void setup() {
   // radio exists; -a75 compares the two.
   xTaskCreatePinnedToCore(TaskSensorDSP, "SensorDSP", 4096, NULL, 2, NULL, 0);
 
-  BleService::begin("Bracelet");
+  BleService::Handlers h;
+  h.setMode = onSetMode;
+  h.setBrightness = onSetBrightness;
+  h.recalibrateGsr = onRecalibrateGsr;
+  h.setStreams = onSetStreams;
+  h.resetBank = onResetBank;
+  BleService::begin("Bracelet", h);
 }
 
 unsigned long lastSerialPrint = 0;
 unsigned long lastFrameMs = 0;
 unsigned long lastJitterPrint = 0;
 unsigned long lastVitalsPublish = 0;
+unsigned long lastSignalsPublish = 0;
+unsigned long lastSpectrumPublish = 0;
 
 void loop() {
   unsigned long now = millis();
@@ -469,6 +554,45 @@ void loop() {
                                  v.arousal > 0.65f);
 
     BleService::publishVitals(v);
+  }
+
+  // Signals. Paced by the render loop rather than a timer: at 60 fps there are ten
+  // times more opportunities than the 5 packets/s the 25 Hz producer needs, so the
+  // stream self-paces instead of racing a fixed period it cannot quite hit.
+  //
+  // Samples are copied out but NOT consumed until the notification is accepted. An
+  // earlier version consumed first and ignored the return value, so every time the
+  // stack's TX buffers were full a batch vanished -- 46 gaps and 15.6 Hz where 25 was
+  // expected, while the timestamps still looked continuous.
+  if (BleService::streamMask() & STREAM_SIGNALS) {
+    BleSignalSample batch[BLE_SIGNALS_BATCH];
+    uint32_t firstTs = 0;
+    uint8_t n = 0;
+
+    portENTER_CRITICAL(&sigMux);
+    uint8_t peek = sigTail;
+    while (n < BLE_SIGNALS_BATCH && peek != sigHead) {
+      if (n == 0) firstTs = sigTimestamp[peek];
+      batch[n++] = sigBuf[peek];
+      peek = (uint8_t)((peek + 1) % SIGBUF_LEN);
+    }
+    portEXIT_CRITICAL(&sigMux);
+
+    if (n == BLE_SIGNALS_BATCH && BleService::publishSignals(firstTs, batch, n)) {
+      portENTER_CRITICAL(&sigMux);
+      sigTail = peek;
+      portEXIT_CRITICAL(&sigMux);
+    }
+  }
+
+  // Spectrum: 1 Hz. binPowers() copies the bank, so it is done here on core 1 rather
+  // than in the sampling task.
+  if ((BleService::streamMask() & STREAM_SPECTRUM) &&
+      now - lastSpectrumPublish >= 1000) {
+    lastSpectrumPublish = now;
+    static float binPower[N_BINS];
+    pulse.binPowers(binPower);
+    BleService::publishSpectrum(binPower, N_BINS, pulse.peakBin, BPM_MIN, BPM_MAX);
   }
 
   if (now - lastSerialPrint > 1000) {

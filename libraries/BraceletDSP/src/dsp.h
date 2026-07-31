@@ -161,6 +161,18 @@ struct PulseTracker {
   float acPower;                         // EMA of y^2, for the perfusion index
   float bpm, confidence, phase;
 
+  // Index of the winning bin at the last estimate(). Published with the spectrum so a
+  // client can mark the peak without re-deriving it and possibly disagreeing.
+  uint8_t peakBin = 0;
+
+  // Copies out the per-bin power. Read-only view for telemetry; the bank itself stays
+  // private to update()/estimate().
+  void binPowers(float *out) const {
+    for (int k = 0; k < N_BINS; k++) {
+      out[k] = resRe[k] * resRe[k] + resIm[k] * resIm[k];
+    }
+  }
+
   // Cardiac AC as a percentage of DC level. For a sinusoid p2p = 2*sqrt(2)*rms.
   float perfusion() const {
     if (baseline < 1.0f) return 0.0f;
@@ -258,6 +270,7 @@ struct PulseTracker {
     // move rather than gating it outright -- low confidence parks the reading on its
     // last good value instead of letting it jump.
     confidence = bestP / (totalP + 1e-12f);
+    peakBin = (uint8_t)best;
     // Instantaneous beat phase. arg(R) alone is only the *offset* of the beat
     // relative to the demodulation reference -- for a signal sitting on the bin
     // frequency R is a near-static phasor, so it does not advance once per beat.

@@ -405,6 +405,7 @@ depends on. Measured rather than argued:
 | ideal | complete | 0.000 counts |
 | baseline, no BLE (±190 µs) | 48 dB | 0.054 counts |
 | BLE advertising (±850 µs) | 35 dB | 0.241 counts |
+| BLE streaming signals + spectrum (±970 µs) | 34 dB | 0.275 counts |
 | ±2000 µs, a full period | 28 dB | 0.562 counts |
 
 SCR features of interest are 10–40 counts, so even full-period jitter leaves mains at

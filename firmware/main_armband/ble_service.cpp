@@ -12,7 +12,12 @@ namespace {
 NimBLEServer *server = nullptr;
 NimBLECharacteristic *vitalsChr = nullptr;
 NimBLECharacteristic *infoChr = nullptr;
+NimBLECharacteristic *controlChr = nullptr;
+NimBLECharacteristic *signalsChr = nullptr;
+NimBLECharacteristic *spectrumChr = nullptr;
 bool connected = false;
+uint8_t streams = 0;
+BleService::Handlers handlers;
 
 // Human-readable on purpose. This is the first thing anyone reads when debugging with
 // nRF Connect, and a packed binary blob would need a decoder to answer "what is this
@@ -27,6 +32,76 @@ String buildInfoString() {
   return s;
 }
 
+// Every command is validated before dispatch. A malformed write from any client in
+// range must not be able to put the device into a state it cannot render -- an
+// out-of-range display mode would index past the end of the mode switch.
+class ControlCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *chr, NimBLEConnInfo &) override {
+    const std::string &v = chr->getValue();
+    if (v.empty()) {
+      Serial.println(F("[BLE] empty control write ignored"));
+      return;
+    }
+    const uint8_t cmd = (uint8_t)v[0];
+    const bool hasArg = v.size() >= 2;
+    const uint8_t arg = hasArg ? (uint8_t)v[1] : 0;
+
+    switch (cmd) {
+      case CMD_SET_MODE:
+        if (!hasArg || arg > 2) {
+          Serial.println(F("[BLE] set-mode: bad argument"));
+          return;
+        }
+        if (handlers.setMode) handlers.setMode(arg);
+        break;
+
+      case CMD_SET_BRIGHTNESS:
+        if (!hasArg) {
+          Serial.println(F("[BLE] set-brightness: missing argument"));
+          return;
+        }
+        if (handlers.setBrightness) handlers.setBrightness(arg);
+        break;
+
+      case CMD_RECALIBRATE_GSR:
+        if (handlers.recalibrateGsr) handlers.recalibrateGsr();
+        break;
+
+      case CMD_SET_STREAMS:
+        if (!hasArg) {
+          Serial.println(F("[BLE] set-streams: missing argument"));
+          return;
+        }
+        streams = arg & (STREAM_SIGNALS | STREAM_SPECTRUM);
+        if (handlers.setStreams) handlers.setStreams(streams);
+        break;
+
+      case CMD_RESET_BANK:
+        if (handlers.resetBank) handlers.resetBank();
+        break;
+
+      case CMD_RESET_CONFIG:
+        if (handlers.resetConfig) handlers.resetConfig();
+        break;
+
+      default:
+        Serial.print(F("[BLE] unknown command 0x"));
+        Serial.println(cmd, HEX);
+        return;
+    }
+
+    Serial.print(F("[BLE] cmd 0x"));
+    Serial.print(cmd, HEX);
+    if (hasArg) {
+      Serial.print(F(" arg "));
+      Serial.print(arg);
+    }
+    Serial.println();
+  }
+};
+
+ControlCallbacks controlCallbacks;
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *s, NimBLEConnInfo &info) override {
     connected = true;
@@ -36,6 +111,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
   void onDisconnect(NimBLEServer *s, NimBLEConnInfo &info, int reason) override {
     connected = false;
+    // Streams are per-session. Leaving them on would keep the DSP task packing
+    // notifications nobody receives, and would surprise the next client.
+    streams = 0;
     Serial.print(F("[BLE] disconnected, reason "));
     Serial.println(reason);
     // Without this the bracelet becomes invisible after the first client leaves,
@@ -50,7 +128,8 @@ ServerCallbacks serverCallbacks;
 
 namespace BleService {
 
-void begin(const char *deviceName) {
+void begin(const char *deviceName, const Handlers &h) {
+  handlers = h;
   NimBLEDevice::init(deviceName);
 
   // The spectrum packet is 56 bytes and the signals packet 46, both beyond the 23-byte
@@ -65,6 +144,13 @@ void begin(const char *deviceName) {
 
   vitalsChr = svc->createCharacteristic(
       BLE_CHR_VITALS, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+
+  signalsChr = svc->createCharacteristic(BLE_CHR_SIGNALS, NIMBLE_PROPERTY::NOTIFY);
+  spectrumChr = svc->createCharacteristic(BLE_CHR_SPECTRUM, NIMBLE_PROPERTY::NOTIFY);
+
+  controlChr = svc->createCharacteristic(
+      BLE_CHR_CONTROL, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  controlChr->setCallbacks(&controlCallbacks);
 
   infoChr = svc->createCharacteristic(BLE_CHR_INFO, NIMBLE_PROPERTY::READ);
   infoChr->setValue(buildInfoString().c_str());
@@ -95,6 +181,28 @@ void publishVitals(const BleVitals &v) {
   if (connected) vitalsChr->notify();
 }
 
+bool publishSignals(uint32_t firstTimestampMs, const BleSignalSample *samples,
+                    uint8_t count) {
+  if (!signalsChr || !connected || !(streams & STREAM_SIGNALS) || count == 0) {
+    return false;
+  }
+  uint8_t buf[BLE_SIGNALS_LEN];
+  size_t n = blePackSignals(buf, firstTimestampMs, samples, count);
+  signalsChr->setValue(buf, n);
+  return signalsChr->notify();
+}
+
+void publishSpectrum(const float *binPower, uint8_t bins, uint8_t peakBin,
+                     float bpmLo, float bpmHi) {
+  if (!spectrumChr || !connected || !(streams & STREAM_SPECTRUM)) return;
+  uint8_t buf[BLE_SPECTRUM_LEN];
+  size_t n = blePackSpectrum(buf, binPower, bins, peakBin, bpmLo, bpmHi);
+  spectrumChr->setValue(buf, n);
+  spectrumChr->notify();
+}
+
+uint8_t streamMask() { return streams; }
+
 bool isConnected() { return connected; }
 
 }  // namespace BleService
@@ -102,8 +210,11 @@ bool isConnected() { return connected; }
 #else  // ENABLE_BLE
 
 namespace BleService {
-void begin(const char *) {}
+void begin(const char *, const Handlers &) {}
 void publishVitals(const BleVitals &) {}
+bool publishSignals(uint32_t, const BleSignalSample *, uint8_t) { return false; }
+void publishSpectrum(const float *, uint8_t, uint8_t, float, float) {}
+uint8_t streamMask() { return 0; }
 bool isConnected() { return false; }
 }  // namespace BleService
 
