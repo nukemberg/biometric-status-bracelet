@@ -104,6 +104,42 @@ static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// ============================================================================
+// LOOP SCHEDULING JITTER
+// ============================================================================
+// The 20-sample boxcar nulls 50 Hz only because its window is exactly 40 ms. That
+// assumes the sampling loop actually runs every 2 ms. A NimBLE controller task shares
+// core 0 with it and can preempt, so this measures the real period rather than
+// assuming it. Baseline it before the radio exists, then compare.
+//
+// Pure integer bookkeeping, no Arduino: the caller supplies micros().
+struct JitterMonitor {
+  uint32_t last = 0;
+  uint32_t minUs = 0xFFFFFFFF;
+  uint32_t maxUs = 0;
+  uint64_t sumUs = 0;
+  uint32_t count = 0;
+  uint32_t overruns = 0;      // periods more than 50% past target
+  bool primed = false;
+
+  void reset() {
+    minUs = 0xFFFFFFFF; maxUs = 0; sumUs = 0; count = 0; overruns = 0;
+  }
+
+  void tick(uint32_t nowUs, uint32_t targetUs) {
+    if (!primed) { last = nowUs; primed = true; return; }
+    uint32_t dt = nowUs - last;      // unsigned wraparound is correct here
+    last = nowUs;
+    if (dt < minUs) minUs = dt;
+    if (dt > maxUs) maxUs = dt;
+    sumUs += dt;
+    count++;
+    if (dt > targetUs + targetUs / 2) overruns++;
+  }
+
+  float meanUs() const { return count ? (float)((double)sumUs / count) : 0.0f; }
+};
+
 // Initial BPM before the bank has converged. Shared by every consumer so the
 // firmware and the offline reference start from the same state.
 #define DEFAULT_BPM     78.0f

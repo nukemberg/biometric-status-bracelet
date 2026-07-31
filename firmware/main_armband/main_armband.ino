@@ -99,6 +99,11 @@ volatile bool gsrResetRequest = false;
 
 WearDetect wear;
 
+// Measured on core 0, where a NimBLE controller task will later compete for time.
+// Reported every 10 s and then reset, so each line describes a fresh window.
+JitterMonitor jitter;
+portMUX_TYPE jitterMux = portMUX_INITIALIZER_UNLOCKED;
+
 // ============================================================================
 // BUTTON INTERACTION HANDLER (polled from the render loop at ~60 Hz)
 // ============================================================================
@@ -138,6 +143,13 @@ void TaskSensorDSP(void *pvParameters) {
   const TickType_t period = pdMS_TO_TICKS(RAW_PERIOD_MS);
 
   for (;;) {
+    // Guarded because the render loop on core 1 reads and resets these. The
+    // critical section is a handful of instructions against a 2000 us period, but
+    // it is on the very path being measured, so it is part of what gets reported.
+    portENTER_CRITICAL(&jitterMux);
+    jitter.tick(micros(), RAW_PERIOD_MS * 1000);
+    portEXIT_CRITICAL(&jitterMux);
+
     // One read per channel per tick; the boxcar below does the averaging, so the
     // old 16-read burst was redundant work.
     lastPulse = analogRead(PIN_PULSE);
@@ -399,6 +411,7 @@ void setup() {
 
 unsigned long lastSerialPrint = 0;
 unsigned long lastFrameMs = 0;
+unsigned long lastJitterPrint = 0;
 
 void loop() {
   unsigned long now = millis();
@@ -463,6 +476,31 @@ void loop() {
     }
 
     lastSerialPrint = now;
+  }
+
+  if (now - lastJitterPrint > 10000) {
+    portENTER_CRITICAL(&jitterMux);
+    uint32_t jmin = jitter.minUs, jmax = jitter.maxUs, jn = jitter.count,
+             jover = jitter.overruns;
+    float jmean = jitter.meanUs();
+    jitter.reset();
+    portEXIT_CRITICAL(&jitterMux);
+
+    if (jn) {
+      Serial.print(F("[Jitter] target "));
+      Serial.print(RAW_PERIOD_MS * 1000);
+      Serial.print(F("us | min "));
+      Serial.print(jmin);
+      Serial.print(F(" mean "));
+      Serial.print(jmean, 1);
+      Serial.print(F(" max "));
+      Serial.print(jmax);
+      Serial.print(F(" | overruns "));
+      Serial.print(jover);
+      Serial.print(F("/"));
+      Serial.println(jn);
+    }
+    lastJitterPrint = now;
   }
 
   delay(16); // 60 FPS
