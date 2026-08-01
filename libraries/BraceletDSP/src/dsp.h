@@ -48,7 +48,14 @@
 #define SLOPE_CLAMP     60.0f   // counts/s; rejects contact/motion steps
 #define RANGE_TAU       30.0f
 #define RANGE_GAIN      2.5f
-#define RANGE_FLOOR     0.5f
+// Floor on the auto-range denominator, in counts/s. 0.5 was too low to survive a
+// real wrist: slope is measured in counts per SECOND at DSP_HZ = 25, so a single
+// ADC count of phasic wiggle between two samples is already 25 counts/s, against a
+// floored denominator of RANGE_GAIN * 0.5 = 1.25. Arousal pinned at 1.0 on 12-bit
+// quantisation dither alone, with raw GSR sitting quietly in a ~100-count band.
+// 3.0 (denominator 7.5) keeps a genuine SCR on scale while riding above the dither.
+// Provisional -- the honest value comes from a calibrated resting capture (-cal).
+#define RANGE_FLOOR     3.0f
 #define OUT_ATTACK_TAU  0.10f
 #define OUT_RELEASE_TAU 1.50f
 
@@ -56,9 +63,10 @@
 // Without this the bank happily tracks noise and reports a confident heart rate for
 // nobody. Two independent checks, because each covers the other's blind spot:
 //
-//  1. GSR electrodes. Skin between the pads reads 1175-1509 counts across every
-//     capture taken so far (bio2/bio3/bio4); an open circuit rails to ~3900-4095.
-//     That is a 2.6x margin, so it makes a solid hard gate.
+//  1. GSR electrodes. Skin between the pads reads 1000-1509 counts across every
+//     capture taken so far (bio2/bio3/bio4 plus on-wrist checks); off the wrist it
+//     sits around 2400 rather than railing. Still a clean gap, but a much smaller
+//     one than the logged captures suggested.
 //  2. PPG perfusion index (cardiac AC / DC) -- used to judge whether the *pulse* is
 //     trustworthy, NOT whether the device is worn. See below.
 //
@@ -74,14 +82,16 @@
 // derived from a *different* formula (scipy band-pass p2p / mean) and sat below the
 // unworn floor, so the PPG half of the gate never rejected anything.
 //
-// GSR separates cleanly and does the gating alone: worn 1175-1509 across every
-// capture, open circuit 3507-4095, nothing in between.
+// GSR separates cleanly and does the gating alone: worn 1000-1509, unworn ~2400 on
+// the current electrodes (earlier captures showed 3507-4095), nothing in between.
+// The old 3000 ceiling accepted that ~2400 unworn reading as a wrist; 2100 splits
+// the two populations. Both bounds are runtime-configurable via gsrWornMin/Max.
 //
 // Confidence is deliberately used for neither: an unworn board was observed reporting
 // confidence 0.29, as high as a good worn signal, because the bank locks onto noise
 // just as happily as onto a pulse.
 #define GSR_WORN_MIN    500       // below this the pin is shorted or unpowered
-#define GSR_WORN_MAX    3000      // above this the electrodes are open
+#define GSR_WORN_MAX    2100      // above this the electrodes are open
 
 // Above this the cardiac signal is strong enough to believe the rate. Set between
 // bio2's p90 (0.306) and bio4's minimum (0.482). Below it the device still knows it

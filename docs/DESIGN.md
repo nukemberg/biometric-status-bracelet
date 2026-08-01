@@ -107,6 +107,12 @@ simultaneous manual radial count and confirmed by the Welch peak at 64.1 BPM:
 - within ±8 BPM of truth **87 %** of the time
 - confidence settles at 0.21–0.37 on good contact, ~0.12 on poor
 
+Confidence is a power *share*, so its useful range is nothing like 0–1: flat noise sits at
+1/48 = 0.02 and `CONF_REF = 0.18` is already "fully trusted". Everything that consumes it —
+LED saturation, beat-phase pull, the web readout — uses `min(1, confidence/confRef)`, which
+is the number worth showing a human. The raw share is kept on the wire and in logs; only
+the UI converts.
+
 The remaining 13 % is **harmonic capture**: when the fundamental momentarily dips the
 bank latches onto 2× or 3× the true rate for a few seconds. On `bio4.csv` the 2nd
 harmonic carries 124 power against the fundamental's 151 — close enough that a small dip
@@ -167,7 +173,7 @@ the rotator on the unit circle. Cost ≈ 14 kflop/s — negligible.
 
 At render rate the bank yields three things at once:
 - **rate** — parabolic-interpolated argmax of |R|², slew-limited to 8 BPM/s weighted by confidence
-- **confidence** — peak share of total bank power (flat noise gives 1/48)
+- **confidence** — peak share of total bank power (flat noise gives 1/48 = 0.02)
 - **beat phase** — `arg(R · conj(rot))`
 
 That last term matters: `arg(R)` alone is only the phase *offset* relative to the
@@ -193,6 +199,14 @@ recent activity. Correct for a lively LED bar, wrong for an absolute measure.
 Measured on `bio2.log`: 0 % of samples pinned at zero (was 33 %), 13 % saturated, full
 range used.
 
+**The floor matters more than it looks.** Slope is counts per *second* at `DSP_HZ = 25`, so
+one ADC count of phasic movement between two consecutive samples is already 25 counts/s.
+`RANGE_FLOOR` was 0.5, giving a floored denominator of `RANGE_GAIN × 0.5 = 1.25` — on-wrist,
+raw GSR resting quietly inside a ~100-count band swung arousal across most of its range,
+because 12-bit quantisation dither alone clears that denominator by an order of magnitude.
+Now 3.0 (denominator 7.5). That is sized to sit above dither, **not measured** — see -9ny
+and §4.1.
+
 ### 3.4 LED rendering
 
 - **Phase-locked oscillator.** A free-running phase accumulator advances at the tracked
@@ -215,9 +229,11 @@ range used.
 These are two separate questions, answered by two different signals, because the obvious
 metric turns out to answer only one of them.
 
-**Wear is decided by GSR alone.** Skin between the pads reads 1175–1509 counts across
-every capture; an open circuit reads 3507–4095. Nothing lands in between, so the window
-500–3000 separates cleanly. Asymmetric dwell: 2 s to claim contact, 5 s to release. On
+**Wear is decided by GSR alone.** Skin between the pads reads 1000–1509 counts across
+every capture. Logged captures showed an open circuit at 3507–4095, but on-wrist testing
+found the unworn bracelet resting near 2400 — inside the original 500–3000 window, which
+therefore called an empty bracelet worn. The window is now 500–2100, which still clears
+the worn population by a wide margin. Asymmetric dwell: 2 s to claim contact, 5 s to release. On
 release the resonator bank is cleared so the next wearer never sees the previous one's
 rate.
 
@@ -294,6 +310,73 @@ debugging DSP through LED animations does not work.
 Ground truth for heart rate comes from a **manual radial pulse count taken during the
 capture**, cross-checked against a Welch spectrum. Per-window Welch alone is not a
 reliable reference — on `bio2.log` it swings 58–131 BPM between windows.
+
+### 4.1 On-wrist GSR recalibration
+
+GSR is the one part of the pipeline that cannot be settled offline: both thresholds that
+matter — the wear window and the arousal auto-range floor — depend on the electrodes, the
+skin, and how tightly the band is strapped. Two of the three parameters below are
+runtime-tunable over BLE, so most of this needs no reflash.
+
+**Step 1 — wear window (`gsrWornMin` / `gsrWornMax`).** Runtime-tunable.
+
+```bash
+tools/blectl.py monitor --seconds 30 --csv unworn.csv   # bracelet on the bench
+tools/blectl.py monitor --seconds 30 --csv worn.csv     # bracelet strapped on
+```
+
+Read `gsr_raw` from each. Expect two well-separated clusters — worn is the *lower* one
+(skin conductance pulls the Grove output down). Latest hardware: worn 1000–1500, unworn
+~2400. Set the ceiling between them, nearer the unworn side:
+
+```bash
+tools/blectl.py config set gsr_worn_max 2100
+```
+
+The value persists in NVS. Confirm with `blectl config get`. Caveat from -6y4: an unworn
+sensor is a floating input, so the unworn cluster moves between sessions and this
+threshold is a re-measurement, not a fix. If the two clusters overlap, stop — that is the
+IMU-gate problem (-00y), not a threshold problem.
+
+**Step 2 — resting baseline.** Strapped on, sitting still, no talking, 3 minutes:
+
+```bash
+tools/blectl.py monitor --seconds 180 --csv rest.csv
+```
+
+`gsr_raw` should drift slowly downward (tonic habituation, ~0.9 counts/s) — that drift is
+subtracted by design and must **not** move arousal. What to expect in `arousal`: with the
+auto-range being relative, resting settles **mid-scale, around 0.3–0.6, and wanders**. It
+does not sit at zero, and that is intentional (§3.3). What is *wrong* is arousal parked at
+or near 1.0 while `gsr_raw` moves by only a few counts — that is the dither-saturation
+failure the floor exists to prevent.
+
+**Step 3 — provoke a real SCR.** The standard bench provocation is a sharp inhale. Sit
+still for 30 s, then take one deep breath, then hold still for another 60 s. Repeat 3–4
+times a minute apart. A startle (a clap out of your own line of sight) or mental
+arithmetic under time pressure works too.
+
+What a genuine skin-conductance response looks like:
+
+| | |
+|---|---|
+| Latency | **1–3 s** after the stimulus — not instant. An immediate jump is motion or a contact artifact, not an SCR. |
+| Rise | `gsr_raw` falls (conductance up) over **1–3 s**, typically tens of counts |
+| Arousal | rises to near full scale within ~2–4 s (0.10 s output attack, then the drive envelope) |
+| Recovery | decays back over **5–15 s** (3 s release on drive, 1.5 s on output, plus tonic re-settling) |
+| Refractory | back-to-back breaths give a smaller second response — space them ~60 s apart |
+
+Then move your arm deliberately without breathing hard. If that produces a bigger
+excursion than the breath did, the response you are looking at is mechanical, not
+electrodermal — check strap tension and electrode contact before tuning anything.
+
+**Step 4 — pick the floor.** `RANGE_FLOOR` is **not** runtime-tunable today (-9ny covers
+exposing it), so this step needs a reflash per value. Replay the captures through
+`tools/dsp_v2_sim.py` instead, which is the whole point of the offline harness: sweep the
+constant against `rest.csv` and the breath capture until resting sits low-to-mid and a
+real SCR still reaches full scale. Then change it in **both** `dsp.h` and `dsp_v2_sim.py`
+and re-run `tools/dsp_v2_parity.sh` — the constants are duplicated, and parity is the only
+thing that catches them drifting apart.
 
 ---
 

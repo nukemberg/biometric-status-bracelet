@@ -469,6 +469,10 @@ const CONFIG_PARAMS = {
   conf_gate: 0x08, conf_ref: 0x09, slew_bpm_s: 0x0A,
 };
 const CONFIG_PARAM_COUNT = Object.keys(CONFIG_PARAMS).length;
+
+// Last config read back from the device, so the readout can scale against the
+// thresholds the firmware is actually using. Empty until the first loadConfig().
+let deviceConfig = {};
 const CONFIG_PARAM_BY_ID = Object.fromEntries(
   Object.entries(CONFIG_PARAMS).map(([n, id]) => [id, n]));
 
@@ -693,6 +697,19 @@ requestAnimationFrame(frame);
 // --- readout ----------------------------------------------------------------
 const $ = id => document.getElementById(id);
 
+// Raw confidence is the peak share of resonator-bank power across N_BINS=48 bins,
+// so its useful range is nothing like 0..1: uniform noise sits at 1/48 = 0.02 and
+// the firmware already treats confRef (0.18 by default) as fully trusted -- both
+// the LED saturation in main_armband.ino and the beat-phase pull use
+// min(1, confidence/confRef). Reporting the raw number read as "20% confidence"
+// on a signal the device considers perfect. Show the same trust fraction the
+// firmware acts on instead, against the device's live confRef rather than a
+// hardcoded copy of it.
+function pulseTrust(confidence) {
+  const ref = deviceConfig.conf_ref > 0 ? deviceConfig.conf_ref : 0.18;
+  return Math.min(1, confidence / ref);
+}
+
 function render(v) {
   vitals = v;
 
@@ -710,11 +727,11 @@ function render(v) {
   } else if (!v.pulseTrusted) {
     verdict = "<strong>Searching.</strong> Pulse signal too weak to believe.";
   } else {
-    verdict = `Tracking at <strong>${(v.confidence * 100).toFixed(0)}%</strong> ` +
-              `confidence`;
+    verdict = `Tracking at <strong>${(pulseTrust(v.confidence) * 100).toFixed(0)}%</strong> ` +
+              `trust`;
   }
   $("verdict").innerHTML = verdict;
-  $("confBar").style.width = `${Math.min(100, (v.confidence / 0.18) * 100)}%`;
+  $("confBar").style.width = `${pulseTrust(v.confidence) * 100}%`;
 
   $("arousal").textContent = `${(v.arousal * 100).toFixed(0)}%`;
   $("arousalBar").style.width = `${v.arousal * 100}%`;
@@ -931,6 +948,7 @@ async function sendConfig(param, value) {
   if (!configChr) return;
   try {
     await configChr.writeValue(encodeConfigWrite(param, value));
+    deviceConfig[param] = value;
   } catch (err) {
     $("note").innerHTML = `<b>Config write failed.</b> ${err.message}`;
   }
@@ -940,6 +958,7 @@ async function loadConfig() {
   if (!configChr) return;
   try {
     const cfg = decodeConfigRead(await configChr.readValue());
+    deviceConfig = cfg;
     for (const [p, v] of Object.entries(cfg)) {
       const input = $(`cfg-${p}`);
       if (!input) continue;
@@ -1000,6 +1019,7 @@ async function connect() {
       setControlsEnabled(false);
       controlChr = null;
       configChr = null;
+      deviceConfig = {};
       signalsChr = null;
       spectrumChr = null;
       streams = 0;

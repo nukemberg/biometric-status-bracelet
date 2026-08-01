@@ -65,7 +65,10 @@ SLOPE_CLAMP = 60.0  # counts/s; rejects contact/motion steps (measured up to 570
 # priority.
 RANGE_TAU = 30.0
 RANGE_GAIN = 2.5  # drive must reach 2.5x its recent mean to peg the bar
-RANGE_FLOOR = 0.5  # counts/s, keeps a dead/disconnected sensor from being amplified
+# counts/s. Keeps a dead/disconnected sensor from being amplified, and -- since one
+# ADC count of movement between samples is already 25 counts/s at DSP_HZ -- keeps
+# quantisation dither from pegging the bar. Must match RANGE_FLOOR in dsp.h.
+RANGE_FLOOR = 3.0
 OUT_ATTACK_TAU = 0.10
 OUT_RELEASE_TAU = 1.50
 
