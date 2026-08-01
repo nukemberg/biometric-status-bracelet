@@ -1015,6 +1015,7 @@ async function connect() {
       $("bpm").textContent = "--";
       $("verdict").textContent = "Bracelet disconnected";
       $("connect").textContent = "Connect bracelet";
+      $("connect").onclick = connect;
     });
 
     setLink("off", "Connecting…");
