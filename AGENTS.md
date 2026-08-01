@@ -23,6 +23,15 @@ bd close <id>         # Complete work
 bd dolt push          # Push beads data to remote
 ```
 
+## Task Automation (`just`)
+
+This repository uses `just` for task automation (compiling, flashing, monitoring, testing).
+Run `just` to see all available recipes. Common tasks:
+- `just build` (or `just compile`) — compile firmware
+- `just upload` — compile and flash
+- `just monitor` — stream serial output
+- `just test` — run protocol and wire-format validation tests
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
