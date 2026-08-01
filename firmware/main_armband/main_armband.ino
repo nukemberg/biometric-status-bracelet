@@ -581,22 +581,14 @@ void setup() {
   gsr.begin();
   wear.applyConfig(cfg);
 
-  // Brownout-safe staging (-av5): the WS2812 RMT driver and the BLE radio are the
-  // two highest-inrush peripherals on this board. A one-off brownout loop (E BOD,
-  // 2-3 resets then recovered) was observed right after RMT init during a flash,
-  // before BLE came up -- which points at a marginal USB supply rather than
-  // sustained LED current (the LEDs are held off here and only lit from loop(),
-  // which runs after setup()). We still stage the two inrush events apart so a
-  // marginal supply has a window to recover, and we log markers around each so a
-  // future capture can time any recurrence to a specific peripheral. Root cause
-  // still wants a real current measurement; see -av5.
-  Serial.println(F("[boot] init LED driver"));
-  FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
-  FastLED.setBrightness(bio.brightness);
-  FastLED.clear();
-  FastLED.show();   // all off: no LED current overlaps the radio init below
-  delay(50);        // let the RMT driver's enable inrush settle
-  Serial.println(F("[boot] LED driver ready"));
+  // Brownout staging (-av5): the BLE radio and the WS2812 RMT driver are the two
+  // highest-inrush peripherals. On-device testing showed the brownout (E BOD)
+  // fires right at radio init, never at the LED driver -- but ONLY when the LED
+  // strip is physically connected. The strip's input capacitance on the data GPIO
+  // (even high-Z) loads the rail enough to tip the radio's inrush over the brownout
+  // threshold. Fix: bring the radio up FIRST with the LED data line still floating,
+  // then init the RMT driver once the radio is stable and advertising.
+  // Root cause still wants a real current measurement; see -av5.
 
   Wire.begin(PIN_SDA, PIN_SCL);
   if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
@@ -607,6 +599,7 @@ void setup() {
   // radio exists; -a75 compares the two.
   xTaskCreatePinnedToCore(TaskSensorDSP, "SensorDSP", 4096, NULL, 2, NULL, 0);
 
+  Serial.println(F("[boot] starting radio"));
   BleService::Handlers h;
   h.setMode = onSetMode;
   h.setBrightness = onSetBrightness;
@@ -616,12 +609,17 @@ void setup() {
   h.resetConfig = onResetConfig;
   h.getConfig = onGetConfig;
   h.setConfigParam = onSetConfigParam;
-  // A short settle before the radio powers up, separating the LED driver's inrush
-  // from the radio's. Cheap insurance on USB and especially on a future 18650 pack
-  // whose transient response may be worse than a bench supply.
-  Serial.println(F("[boot] starting radio"));
-  delay(70);
   BleService::begin("Bracelet", h);
+
+  // Radio is up and advertising. NOW init the LED strip -- the RMT driver's GPIO
+  // configuration is what interacts with the strip's input capacitance, so
+  // deferring it until after the radio's inrush has settled avoids the brownout.
+  Serial.println(F("[boot] init LED driver"));
+  FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(bio.brightness);
+  FastLED.clear();
+  FastLED.show();
+  Serial.println(F("[boot] boot complete"));
 }
 
 unsigned long lastSerialPrint = 0;
