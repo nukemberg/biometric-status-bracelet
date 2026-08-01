@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(rg -in \"gsr\" -B2 -A15 --type-add 'fw:*.{c,h,cpp,hpp,ino}' -tfw .)"
+      "Skill(update-config)",
+      "Bash(rg *)",
+      "Bash(bd *)",
+      "Bash(node --check webapp/index.html)",
+      "Bash(bash tools/dsp_v2_parity.sh)",
+      "Bash(python3 -c ' *)",
+      "Bash(node --check /private/tmp/claude-501/-Users-avishai-code-biometric-status-bracelet/617cef21-ad00-40e2-bef2-f48f8c898382/scratchpad/app.mjs)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }
