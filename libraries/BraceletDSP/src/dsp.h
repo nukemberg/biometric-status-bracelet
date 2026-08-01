@@ -172,6 +172,7 @@ struct BraceletConfig {
   float confGate    = CONF_GATE;
   float confRef     = CONF_REF;
   float slewBpmPerS = SLEW_BPM_PER_S;
+  float brightness  = 60.0f;
 
   static BraceletConfig defaults() { return BraceletConfig(); }
 };

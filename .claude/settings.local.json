@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rg -in \"gsr\" -B2 -A15 --type-add 'fw:*.{c,h,cpp,hpp,ino}' -tfw .)"
+    ]
+  }
+}

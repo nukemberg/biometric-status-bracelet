@@ -487,11 +487,13 @@ const CONFIG_META = {
   conf_gate:    {min: 0,   max: 1,    step: 0.01, label: "Conf gate"},
   conf_ref:     {min: 0,   max: 1,    step: 0.01, label: "Conf ref"},
   slew_bpm_s:   {min: 0,   max: 30,   step: 0.5,  label: "Slew BPM/s"},
+  brightness:   {min: 0,   max: 255,  step: 1,    label: "Brightness"},
 };
 const CONFIG_GROUPS = [
   {name: "Hue gradient",  params: ["hue_bpm_lo", "hue_bpm_hi", "hue_at_lo", "hue_at_hi"]},
   {name: "Wear gate",     params: ["pi_trust_min", "gsr_worn_min", "gsr_worn_max"]},
   {name: "Pulse tracking", params: ["conf_gate", "conf_ref", "slew_bpm_s"]},
+  {name: "Display",       params: ["brightness"]},
 ];
 
 function decodeVitals(dv) {

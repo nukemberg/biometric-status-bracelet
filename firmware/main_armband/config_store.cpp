@@ -33,6 +33,7 @@ const FieldSpec FIELDS[] = {
     {"confGate",   &BraceletConfig::confGate,   0.0f,    1.0f},
     {"confRef",    &BraceletConfig::confRef,    0.0f,    1.0f},
     {"slewBpmPerS",&BraceletConfig::slewBpmPerS,0.0f,    400.0f},
+    {"brightness", &BraceletConfig::brightness, 0.0f,    255.0f},
 };
 constexpr size_t FIELD_COUNT = sizeof(FIELDS) / sizeof(FIELDS[0]);
 

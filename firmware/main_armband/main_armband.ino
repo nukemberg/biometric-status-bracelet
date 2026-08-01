@@ -164,8 +164,9 @@ void onSetBrightness(uint8_t value) {
   bioDataLock();
   bio.brightness = value;
   bioDataUnlock();
-  // FastLED keeps its own copy; the render loop does not read bio.brightness.
   FastLED.setBrightness(value);
+  cfg.brightness = (float)value;
+  ConfigStore::save(cfg);
 }
 
 void onRecalibrateGsr() { gsrResetRequest = true; }
@@ -292,6 +293,8 @@ void TaskSensorDSP(void *pvParameters) {
         cfg = BraceletConfig::defaults();
         pulse.applyConfig(cfg);
         wear.applyConfig(cfg);
+        bio.brightness = (uint8_t)(cfg.brightness + 0.5f);
+        FastLED.setBrightness(bio.brightness);
         Serial.println(F("[Config] reset to compiled defaults"));
       }
 
@@ -580,6 +583,7 @@ void setup() {
   pulse.applyConfig(cfg);
   gsr.begin();
   wear.applyConfig(cfg);
+  bio.brightness = (uint8_t)(cfg.brightness + 0.5f);
 
   // Brownout staging (-av5): the BLE radio and the WS2812 RMT driver are the two
   // highest-inrush peripherals. On-device testing showed the brownout (E BOD)
