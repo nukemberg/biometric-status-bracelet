@@ -69,29 +69,3 @@ A wearable festival/party biometrics panel worn on the forearm via a fabric slee
 3. **BLE Control / Stealth Mode:**
    - Low-brightness night mode or custom user-selected palette via BLE commands.
 
----
-
-## Implementation & Testing Roadmap
-
-### Phase 1: Sensor Interfacing & Diagnostic Validation (In Progress)
-- [x] Document hardware wiring and ADC mapping for ESP32-S3 and Standard ESP32 (`SENSOR_TESTING.md`, `ESP32_STANDARD_MAPPING.md`).
-- [x] Hardware wired on breadboard test rig (ESP32 DevKit, GSR, PPG Pulse, BME280, WS2812B).
-- [x] Flash diagnostic sketch (`firmware/sensor_test_esp32_standard/sensor_test_esp32_standard.ino`).
-- [x] Inspect raw ADC values and PPG wave signals via Serial Plotter (Pulse, GSR, BME280 verified working!).
-
-### Phase 2: Signal Processing & DSP Implementation
-- [x] Implement exponential moving average (EMA) filter & adaptive peak detection algorithm for PPG Pulse sensor (calculate live BPM).
-- [x] Implement dynamic baseline calibration & conductance delta tracking for Grove GSR.
-- [x] Implement temperature scaling and thermal color mapping.
-
-### Phase 3: Visual Engine & LED Segment Rendering
-- [x] 3x7 matrix indexing map for serpentine / parallel WS2812B strip.
-- [x] Segment 1: Cardiac heartbeat thumping animation (color synced to BPM).
-- [x] Segment 2: GSR Excitement level dynamic VU-meter bar.
-- [x] Segment 3: Thermal temperature gradient gauge.
-- [x] Overdrive / Hype combo effect mode.
-- [x] Dual-core FreeRTOS architecture implemented (`firmware/main_armband/main_armband.ino`).
-
-### Phase 4: User Controls & BLE Wireless
-- [x] Button debouncing & state machine (Short press: mode toggle; Long press: GSR zeroing).
-- [ ] BLE GATT server implementation (live telemetry stream & remote control).
