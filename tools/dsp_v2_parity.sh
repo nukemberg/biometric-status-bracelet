@@ -7,7 +7,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-LOG="${1:-samples/bio2.log}"
+# Defaults to the synthetic fixture, not to a recorded capture. samples/bio2.log and
+# bio4.csv are analog-front-end captures and no longer parse (DESIGN.md section 5),
+# and there is no MAX30102 wrist capture in the repo yet. The fixture exercises the
+# same code paths, which is all a parity check needs -- signal quality is a separate
+# question that needs real data.
+LOG="${1:-samples/synthetic.csv}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 

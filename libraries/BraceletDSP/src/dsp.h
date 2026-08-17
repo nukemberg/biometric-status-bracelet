@@ -17,10 +17,17 @@
 #include <math.h>
 #include <stdint.h>
 
-// 500 Hz ADC decimated to 25 Hz by a 20-sample boxcar. The 40 ms boxcar window nulls
-// 25/50/75 Hz exactly, killing the 50 Hz mains hum measured on the GSR line at ~200x
-// its noise floor, and delivers the same sqrt(20) noise reduction the old 16x
-// oversampling burst did at 1/16 the analogRead() calls.
+// GSR front end: 500 Hz ADC decimated to 25 Hz by a 20-sample boxcar. The 40 ms
+// boxcar window nulls 25/50/75 Hz exactly, killing the 50 Hz mains hum measured on the
+// GSR line at ~200x its noise floor, and delivers the same sqrt(20) noise reduction
+// the old 16x oversampling burst did at 1/16 the analogRead() calls.
+//
+// PPG does NOT go through this path any more. Since the MAX30102 replaced the analog
+// pulse sensor, the PPG arrives from the sensor's own FIFO already at 25 Hz (100 Hz
+// internal sampling, 4x on-chip averaging), with the part's own ambient-light
+// subtraction in place of the boxcar. RAW_HZ/DECIM/RAW_PERIOD_MS now describe the GSR
+// channel alone; DSP_HZ remains the rate BOTH trackers run at, which is what every
+// coefficient below is derived from.
 #define RAW_HZ          500
 #define DECIM           20
 #define DSP_HZ          (RAW_HZ / DECIM)   // 25 Hz
@@ -70,7 +77,16 @@
 //  2. PPG perfusion index (cardiac AC / DC) -- used to judge whether the *pulse* is
 //     trustworthy, NOT whether the device is worn. See below.
 //
-// Measured perfusion(), same formula as the runtime metric:
+// NOTE: everything in the perfusion table below was measured on the v1 analog PPG
+// sensor and is retained as the record of why the design is shaped this way, not as
+// a live calibration. The MAX30102 computes the same ratio from a different signal
+// entirely -- 18-bit IR counts with a DC level in the tens of thousands, its own LED
+// drive and its own ambient subtraction -- so the numbers do not carry over and
+// neither does PI_TRUST_MIN. See DESIGN.md section 4.2 for the recapture procedure.
+// The threshold is runtime-tunable over BLE (CFG_PI_TRUST_MIN), so correcting it
+// needs no reflash.
+//
+// Measured perfusion() on the v1 analog path, same formula as the runtime metric:
 //
 //     bio4.csv  good contact, worn   median 0.678  (min 0.482)
 //     bio2.log  poor contact, worn   median 0.180  (p10 0.151, p90 0.306)
@@ -93,11 +109,17 @@
 #define GSR_WORN_MIN    500       // below this the pin is shorted or unpowered
 #define GSR_WORN_MAX    2100      // above this the electrodes are open
 
-// Above this the cardiac signal is strong enough to believe the rate. Set between
-// bio2's p90 (0.306) and bio4's minimum (0.482). Below it the device still knows it
-// is worn -- GSR says so -- but the pulse segment shows a searching state rather than
-// a confident number, because at bio2 signal quality the tracker reported 113 BPM
-// against a true 88.
+// Above this the cardiac signal is strong enough to believe the rate. Below it the
+// device still knows it is worn -- GSR says so -- but the pulse segment shows a
+// searching state rather than a confident number, because at v1 signal quality the
+// tracker was measured reporting 113 BPM against a true 88.
+//
+// UNCALIBRATED against the MAX30102. 0.40 was chosen between bio2's p90 (0.306) and
+// bio4's minimum (0.482) on the analog sensor, and is carried forward only because
+// some starting value is needed. It is deliberately NOT set to a guess at what the
+// MAX30102 will produce: an invented number that happens to look reasonable is worse
+// than a known-stale one, because it reads as calibrated. Recapture per DESIGN.md
+// section 4.2 and set it over BLE, then move the default here.
 #define PI_TRUST_MIN    0.40f
 #define WEAR_ON_MS      2000      // contact must hold this long before we trust it
 #define WEAR_OFF_MS     5000      // and drop out this long before we let go

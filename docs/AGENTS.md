@@ -14,9 +14,12 @@ A wearable festival/party biometrics panel worn on the forearm via a fabric slee
 1. **GSR (Galvanic Skin Response):** Seeed Studio Grove - GSR Sensor v1.2
    - Powered from 3.3V rail. Signal (SIG) to GPIO 1 (ADC1_CH0). TP1 left disconnected.
    - Measures skin resistance / stress / excitement.
-2. **Pulse Sensor:** XY1911-074 B506 photoplethysmogram (PPG) pulse sensor
-   - Powered from 3.3V rail. Signal (S) to GPIO 2 (ADC1_CH1).
-   - Measures heart rate and heartbeat timing.
+2. **Pulse Sensor:** **MAX30102** digital reflective photoplethysmogram (PPG), $I^2C$ address **0x57**
+   - Powered from 3.3V rail. Shares SDA (GPIO 8) / SCL (GPIO 9) with the temperature sensor — no address collision. INT to GPIO 10 (wired, not currently read).
+   - Red + IR LEDs, 18-bit ADC, on-chip ambient-light subtraction. IR channel is the one used.
+   - Configured for 100 Hz internal sampling with 4x on-chip averaging, so its FIFO delivers exactly 25 Hz — the rate the DSP already runs at. Does **not** use the ESP32 ADC.
+   - Replaced the analog XY1911-074 B506, whose SNR was below 1 on this hardware. See DESIGN.md §3.6.
+   - **Caveat:** many cheap purple GY-MAX30102 breakouts tie the SDA/SCL pull-ups to an internal 1.8V rail, which drops the whole bus below the ESP32's input-high threshold and silently kills the BME280 too. Cut them, fit 4.7kΩ to 3.3V.
 3. **Temperature Sensor:** Digital $I^2C$ Sensor (**TMP102**, **HDC1080**, or **BME280**)
    - Powered from 3.3V rail. Connected via SDA (GPIO 8) and SCL (GPIO 9).
    - Micro-amp ($\mu\text{A}$) ultra-low power consumption for maximum 18650 battery life. High precision skin/ambient temperature. Zero analog noise!
@@ -44,7 +47,8 @@ A wearable festival/party biometrics panel worn on the forearm via a fabric slee
 
 ### Voltage & ADC Safety
 - All sensors operate off the ESP32-S3 **3.3V rail**.
-- On ESP32-S3, Wi-Fi can interfere with ADC2 pins. Therefore, **all analog sensors MUST be assigned to ADC1 pins** (GPIO 1 through 10).
+- On ESP32-S3, Wi-Fi can interfere with ADC2 pins. Therefore, **all analog sensors MUST be assigned to ADC1 pins** (GPIO 1 through 10). GSR is now the only analog sensor.
+- The MAX30102's IR LED pulses at ~50 mA. Decouple it at the module (10 µF + 0.1 µF) or the transient rides the shared 3.3V rail onto the GSR line, whose features of interest are only 10–40 counts.
 - WS2812B data pin (GPIO 4) includes a 330Ω inline resistor. Most 18–21 LED WS2812B strips accept 3.3V logic directly; if flickering occurs, use the diode drop trick or 74AHCT125 level shifter.
 
 ### Pin Allocation Map (Default)
@@ -52,10 +56,14 @@ A wearable festival/party biometrics panel worn on the forearm via a fabric slee
 |---|---|---|
 | WS2812B Data | LED Strip Data Signal | GPIO 4 |
 | Grove GSR v1.2 | Analog Skin Conductance | GPIO 1 (ADC1_CH0) |
-| Pulse Sensor | Analog Photoplethysmogram | GPIO 2 (ADC1_CH1) |
-| Temp Sensor ($I^2C$) | Digital $I^2C$ Data (SDA) | GPIO 8 |
-| Temp Sensor ($I^2C$) | Digital $I^2C$ Clock (SCL) | GPIO 9 |
+| MAX30102 + Temp Sensor | Shared $I^2C$ Data (SDA) | GPIO 8 |
+| MAX30102 + Temp Sensor | Shared $I^2C$ Clock (SCL) | GPIO 9 |
+| MAX30102 INT | PPG_RDY interrupt (wired, unused) | GPIO 10 |
 | Button | Mode / Recalibrate Switch | GPIO 5 (Input Pullup) |
+
+$I^2C$ bus runs at 400 kHz. Addresses: MAX30102 `0x57`, BME280 `0x76`/`0x77`.
+
+GPIO 2 (formerly the analog pulse sensor) is now free.
 
 ### Visual & Interactive Modes
 

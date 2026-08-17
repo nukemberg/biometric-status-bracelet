@@ -19,16 +19,17 @@ in that light.
 | **Development** | ESP32 WROOM-32 DevKit — used for all bench work and every capture in `samples/` |
 | **Power** | 18650 pack, regulated 5 V |
 
-Firmware selects pins with `#define MCU_ESP32_S3`. All analog sensors must sit on
-**ADC1**: on both chips ADC2 is unusable while WiFi/BLE is active.
+Firmware selects pins with `#define MCU_ESP32_S3`. GSR is now the only analog sensor
+and must sit on **ADC1**: on both chips ADC2 is unusable while WiFi/BLE is active.
 
 ### Pin map
 
 | Component | ESP32-S3 | WROOM-32 (dev) |
 |---|---|---|
 | Grove GSR v1.2 (SIG) | GPIO 1 (ADC1_CH0) | GPIO 34 |
-| PPG pulse sensor (S) | GPIO 2 (ADC1_CH1) | GPIO 35 |
-| BME280 SDA / SCL | GPIO 8 / 9 | GPIO 21 / 22 |
+| I²C SDA (MAX30102 + BME280) | GPIO 8 | GPIO 21 |
+| I²C SCL (MAX30102 + BME280) | GPIO 9 | GPIO 22 |
+| MAX30102 INT | GPIO 10 | GPIO 19 |
 | Button (to GND, pull-up) | GPIO 5 | GPIO 18 |
 | WS2812B data | GPIO 4 | GPIO 4 |
 
@@ -36,10 +37,68 @@ Firmware selects pins with `#define MCU_ESP32_S3`. All analog sensors must sit o
 
 - **Grove GSR v1.2** — LM358-based skin conductance. Output *falls* as conductance
   rises. TP1 left disconnected. 3.3 V rail.
-- **PPG pulse sensor** (XY1911-074 B506) — optical, green LED + photodiode. 3.3 V rail.
+- **MAX30102** — I²C reflective PPG, address **0x57**. Red + IR LEDs, 18-bit ADC,
+  on-chip ambient subtraction. Replaced the analog XY1911-074 B506; see §3.6.
 - **BME280** — I²C temperature/humidity. Address 0x76 or 0x77.
 - **WS2812B ×21** — 3 segments of 7, data via 330 Ω series resistor. Most strips accept
   3.3 V logic; add a 74AHCT125 if flickering appears.
+
+### MAX30102 wiring notes
+
+Shares SDA/SCL with the BME280 — 0x57 against 0x76/0x77, no address collision. Bus runs
+at 400 kHz (`Wire.setClock`), which the 25 Hz FIFO drain wants: at 100 kHz a 6-byte
+burst plus its pointer read is a meaningful slice of the 40 ms decimation budget on the
+same task that has to hit a 2 ms tick.
+
+Three things that bite:
+
+1. **Pull-up rail on cheap breakouts.** Many purple GY-MAX30102 boards tie the SDA/SCL
+   pull-ups to the module's internal **1.8 V** rail. The bus then idles at 1.8 V, below
+   the ESP32's V_IH of 0.75 × 3.3 = 2.48 V, so *every* device on the bus including the
+   BME280 stops responding. Cut those pull-ups and fit 4.7 kΩ to 3.3 V externally.
+   SparkFun and Adafruit boards do not have this problem.
+2. **Decoupling.** The IR LED pulses at ~50 mA. 10 µF + 0.1 µF at the module, or the
+   transient shows up on the GSR line — which is on the same 3.3 V rail and whose
+   features of interest are 10–40 counts.
+3. **LED drive current** (`MAX30102_LED_CURRENT`, default 0x32 ≈ 10 mA) is **not tuned
+   on skin**. Too low and the DC sits in the noise; too high and the ADC clips the
+   cardiac AC away at the top of its range. Both present downstream as "no pulse" and
+   neither announces itself. See §4.2.
+
+**INT is wired but not read.** The driver enables the PPG_RDY interrupt so the line
+carries a usable signal, but the DSP task polls the FIFO pointers at its 25 Hz
+decimation boundary instead — one 3-byte I²C read per 40 ms, no ISR. The pin is claimed
+so a future FIFO-driven path needs no rewiring.
+
+### OVF_COUNTER is not a loss counter on this part
+
+Measured during bring-up, and worth knowing before anyone "fixes" the driver back.
+
+The datasheet presents `OVF_COUNTER` (0x05) as a latched count of samples lost to a full
+FIFO. On the part fitted here (`PART_ID` 0x15, `REV_ID` 0x03) it is not. It reads **5
+during completely healthy operation** — `WR` advancing 5, `RD` following 5, `avail`
+steady at 5, IR data clean and continuous at 24.9 Hz — and it reads 5 again on the next
+poll after being explicitly written to 0. It tracks samples *produced* since the last
+clear, not samples dropped.
+
+The first version of the driver treated any non-zero `OVF` as "continuity lost, resync"
+and so **discarded every sample the sensor ever produced**, while reporting a rising
+overflow count that made it look like a core-0 scheduling problem. The jitter monitor
+said otherwise (mean 2000.0 µs, 0 overruns), which is what made the sensor path the
+suspect. `firmware/max30102_probe` is the diagnostic that settled it — it reads the
+config registers back and dumps the raw pointer bytes, and it also proved the burst read
+of 0x04–0x06 with a repeated start agrees byte-for-byte with three individual reads, so
+the driver's I²C path was never at fault.
+
+Consequence: `avail = (WR - RD) & 0x1F` is the only trustworthy signal, and it carries
+the classic wrap ambiguity — a completely full 32-deep FIFO is indistinguishable from an
+empty one. Losing samples needs a 32/25 = **1.3 s** stall, and that shows up as a dip in
+the measured FIFO rate. Coarser than a working overflow counter, and honest.
+
+**Measured FIFO rate: 25.09 Hz** against the 25.00 the DSP assumes — a uniform 0.36 %
+low bias on every reported BPM. Below the 3.19 BPM bin spacing at any plausible rate, so
+no correction is applied; recorded here so it is a known quantity rather than a
+discovery.
 
 ### Analog conditioning: 0.1 µF capacitors
 
@@ -71,6 +130,17 @@ GSR pin would do real work; the bare shunt capacitor does not.
 
 This section exists because several plausible-sounding beliefs about this hardware turned
 out to be false when measured. Numbers come from the captures in `samples/`.
+
+> **Every PPG number below was measured on the v1 analog front end and is now history,
+> not calibration.** The MAX30102 (§3.6) replaced that sensor, so the SNR figures, the
+> perfusion-index table, `PI_TRUST_MIN` and the harmonic-capture measurements all
+> describe hardware the bracelet no longer has. They are kept because they are the
+> reasons the architecture is shaped the way it is — §2.2 is why there is a resonator
+> bank at all, §2.4 is why confidence never gates wear — and those conclusions survive
+> the sensor change even though the numbers do not. **Nothing here has been re-measured
+> on the MAX30102 yet.** See §4.2 for what to capture.
+>
+> §2.5 (GSR) is unaffected: same sensor, same ADC, same rate.
 
 ### 2.1 The PPG signal is very weak, and contact dominates everything
 
@@ -146,16 +216,39 @@ Two FreeRTOS tasks, as before: sampling + DSP pinned to core 0, FastLED render o
 via `loop()`. Shared state in a single `BiometricData` struct behind a `portMUX` critical
 section.
 
-### 3.1 Front end — 500 Hz → 25 Hz boxcar
+### 3.1 Front end — two channels, two clocks
 
-One `analogRead()` per channel per 2 ms tick, accumulated 20 deep and averaged to 25 Hz.
+The two sensors no longer share a sample clock.
 
-The 20-sample window is 40 ms, whose sinc nulls land **exactly on 25 / 50 / 75 Hz** — a
-free, deep notch on the mains hum the capacitors do not remove. It also delivers the same
-√20 noise reduction the previous 16× oversampling burst did, using **1/16 the ADC calls**.
+**GSR — 500 Hz → 25 Hz boxcar.** One `analogRead()` per 2 ms tick, accumulated 20 deep
+and averaged to 25 Hz. The 20-sample window is 40 ms, whose sinc nulls land **exactly on
+25 / 50 / 75 Hz** — a free, deep notch on the mains hum the capacitors do not remove. It
+also delivers the same √20 noise reduction the previous 16× oversampling burst did, using
+**1/16 the ADC calls**.
 
 Timing uses `vTaskDelayUntil()`. The previous `while (micros() - start < 2000) {}` spin
 held core 0 at 100 % duty and prevented the idle task from ever saving power.
+
+**PPG — MAX30102 FIFO at 25 Hz.** 100 Hz internal sampling with 4× on-chip averaging
+lands the FIFO at exactly `DSP_HZ`, so `PulseTracker` is fed at the rate every
+coefficient in `dsp.h` already assumes and nothing downstream changed. 411 µs pulse width
+(18-bit) with both LEDs active caps the internal rate at 100 Hz per the datasheet's
+pulse-width table, which is why it is 100/4 rather than 400/16 — resolution is worth more
+here than headroom, given that §2.1 says amplitude was the entire v1 problem.
+
+The DSP task drains the FIFO at its own decimation boundary and calls
+`PulseTracker.update()` once per sample retrieved — normally one, occasionally zero or
+two as the two clocks drift past each other. All three are expected. The signals ring
+buffer pushes one entry **per PPG sample** rather than per tick, so a zero-sample tick
+does not put a hole in the streamed pulse trace.
+
+> **The MAX30102 oscillator is the one unverified assumption in this chain.** Every
+> resonator bin frequency is derived from `DSP_HZ = 25`, but the part clocks its FIFO off
+> its own oscillator and the datasheet does not specify its tolerance. If it actually
+> delivers 25.6 Hz, every reported BPM is 2.4 % low — uniformly, silently, with nothing
+> else looking wrong. The firmware prints the measured rate in its `[PPG]` line every
+> 10 s and `dsp_v2_sim.py --compare` prints it per capture, precisely so this is observed
+> rather than assumed. See §4.2.
 
 ### 3.2 Pulse — sliding-DFT resonator bank
 
@@ -163,6 +256,19 @@ Per 25 Hz sample: EMA high-pass at 0.5 Hz, two cascaded EMA low-passes at 4 Hz (
 also removes a ~10.2 Hz tremor artifact with harmonics at 20.4 and 40.8 Hz that otherwise
 dominates the spectrum), then 48 complex one-pole resonators spanning **40–190 BPM**,
 τ = 10 s.
+
+Unchanged by the MAX30102 swap — the input is still one float at 25 Hz. What changed is
+its *scale*: 18-bit IR counts with a DC level in the tens of thousands, where the analog
+path delivered a ~1800-count 12-bit reading. The chain is scale-free (the high-pass
+removes DC, confidence is a power ratio), so no coefficient moved. The consequences are
+at the edges: the perfusion index means something different (§3.5), and the BLE wire
+format needed both pulse fields widened to 32 bits (§6).
+
+The tremor low-pass is retained deliberately even though the artifact it was measured
+against was a property of the analog sensor's mounting. 4 Hz is 240 BPM — above
+`BPM_MAX` — so it costs nothing on cardiac signal either way, and removing it would be a
+change made on the assumption that the new sensor has no HF artifact rather than on a
+measurement showing it.
 
 No gain stage. The old `*10.0` boost scaled signal and noise identically and bought
 nothing.
@@ -254,36 +360,73 @@ p2p ÷ mean, giving 0.40 % / 1.60 %) and therefore sat **below** the unworn floo
 half of the gate never rejected anything, and only GSR was doing real work. The lesson is
 that a threshold must be calibrated against the metric the firmware actually computes.
 
-**Perfusion instead decides whether the rate is believable.** Above `PI_TRUST_MIN` (0.40 %,
-between bio2's p90 and bio4's minimum) the pulse segment shows its colour gradient. Below
-it the device still knows it is worn — GSR says so — but the pulse segment shows a
-colourless sweep instead of a confident wrong number. At bio2 signal quality the tracker
-was measured reporting 113 BPM against a true 88, so a "searching" state is the honest
-display. GSR and temperature segments stay live throughout, and the auto-strobe will not
-fire on an untrusted rate.
+**Perfusion instead decides whether the rate is believable.** Above `PI_TRUST_MIN` the
+pulse segment shows its colour gradient. Below it the device still knows it is worn — GSR
+says so — but the pulse segment shows a colourless sweep instead of a confident wrong
+number. At bio2 signal quality the tracker was measured reporting 113 BPM against a true
+88, so a "searching" state is the honest display. GSR and temperature segments stay live
+throughout, and the auto-strobe will not fire on an untrusted rate.
+
+> **`PI_TRUST_MIN` is uncalibrated against the MAX30102.** It is still 0.40, the value
+> derived between bio2's p90 and bio4's minimum on the *analog* sensor. It was carried
+> forward rather than replaced with a guess at what the new part produces, because an
+> invented number that looks plausible reads as calibrated and a known-stale one does
+> not — the same lesson the old `PI_WORN_MIN` taught (a threshold from a different
+> formula that sat below the unworn floor and therefore rejected nothing). It is
+> runtime-tunable over BLE, so fixing it needs no reflash; §4.2 is the procedure.
+>
+> `CONFIG_SCHEMA_VERSION` was bumped to 2 for exactly this reason. The field set did not
+> change, but a stored `piTrustMin` tuned on the old sensor is still perfectly in range
+> for the new one and would load without complaint. The bump forces one fallback to
+> compiled defaults so the threshold is re-derived rather than inherited.
 
 **Known blind spot:** perfusion measures cardiac-band amplitude, and cannot tell a strong
 pulse from strong motion. A handled or shaken board reaches 1.7 % and reads as trusted
 while the tracker walks steadily up through implausible rates. Motion rejection is not
-solved.
+solved, and the MAX30102 does not solve it — a better PPG signal makes the motion
+artifact cleaner too. That is still `-00y` (IMU).
+
+**Unclaimed win: IR DC is a real wear signal.** §2.4 and the table above establish that
+neither confidence nor the analog perfusion index could separate worn from unworn, which
+is why GSR gates wear alone — and why `-6y4` (unworn sensors have no stable electrical
+signature) is still open. The MAX30102 changes that premise: with its LED driven and its
+ambient subtraction active, off-skin IR DC is a few thousand counts against tens of
+thousands on skin, which is the clean separation the analog path never had. **This is not
+implemented.** `WearDetect` still gates on GSR alone. Tracked as `-xe2`; it needs the
+capture in §4.2 before a threshold can be picked honestly.
 
 ### 3.6 Hardware roadmap
 
-The current design is **v1: analog sensors through the ESP32 SAR ADC**, and everything
-in §2 is calibrated against that path.
+**v2 PPG is done: the MAX30102 has replaced the analog pulse sensor** (`bd -kp5`, PPG
+half). The motivation was §2.1 — SNR below 1 is the wall every DSP effort hit, and no
+algorithm recovers a signal beneath its noise floor. The part brings its own LED driver,
+18-bit ADC and ambient subtraction.
 
-**v2 (planned, `bd -kp5`)** replaces the front end: MAX30102 for PPG, optionally ADS1115
-for GSR. The motivation is §2.1 — SNR below 1 is the wall every DSP effort has hit, and
-no algorithm recovers a signal beneath its noise floor. MAX30102 brings its own LED
-driver, 18-bit ADC and ambient subtraction, plus a proximity mode that gives a second
-independent wear signal. ADS1115's PGA at ±0.256 V gives ~7.8 µV/count against the
-ESP32's ~800 µV/count, and its ΔΣ data rate doubles as its filter — at 8–16 SPS it
-rejects mains better than the boxcar of §3.1, letting GSR leave the 500 Hz path entirely.
+What the swap touched and what it did not:
 
-**The cost is that v2 invalidates the calibration in §2.** SNR, perfusion index,
-`PI_TRUST_MIN`, `CONF_REF`/`CONF_GATE`, bank τ and the harmonic-capture measurements are
-all properties of the analog path. `samples/bio2.log` and `bio4.csv` cease to be valid
-regression cases and ground truth must be recaptured. It is a replatform, not a drop-in.
+| | |
+|---|---|
+| **Unchanged** | Every DSP coefficient. `PulseTracker` still takes one float at 25 Hz; the filters, the bank, the slew limiter and the phase oscillator are byte-identical. GSR is untouched end to end. |
+| **Changed** | Sample source (I²C FIFO, not ADC), value scale (18-bit IR, not 12-bit), BLE wire format (v2 — both pulse fields widened to 32 bits), capture format (4-column with an `IrNew` flag), NVS config schema (v2). |
+| **Invalidated** | §2.1–§2.4. SNR, perfusion index, `PI_TRUST_MIN`, and the harmonic-capture measurements were all properties of the analog path. `samples/bio2.log` and `bio4.csv` are no longer valid regression cases and no longer parse. |
+
+**The calibration debt is real and is not paid.** `PI_TRUST_MIN` is a stale constant, the
+LED drive current has never been set against skin, and the FIFO's true rate has not been
+measured. §4.2 is the procedure; `samples/synthetic.csv` keeps the parity harness honest
+in the meantime but says nothing about signal quality.
+
+**Still planned, not done:**
+
+- **ADS1115 for GSR** — the other half of `-kp5`. Its PGA at ±0.256 V gives ~7.8 µV/count
+  against the ESP32's ~800 µV/count, and its ΔΣ data rate doubles as its filter: at
+  8–16 SPS it rejects mains better than the boxcar of §3.1, letting GSR leave the 500 Hz
+  path entirely. Deliberately deferred — GSR is not the channel that was failing, and
+  doing both front ends at once would have meant no working reference for either.
+- **IR-DC wear gating** (`-xe2`) — see §3.5.
+- **IMU** (`-00y`) — independent of the front end and still the only real answer to
+  motion. HR 110 from excitement and HR 110 from walking remain indistinguishable, and
+  arm movement still produces SCR-shaped GSR artifacts that look exactly like arousal.
+  A better PPG sensor does not help here; it makes the artifact cleaner too.
 
 **An IMU (`bd -00y`) is independent of that** and can land first: it needs no front-end
 change and invalidates nothing. Its role is not to measure arousal — motion-to-excitement
@@ -302,14 +445,40 @@ debugging DSP through LED animations does not work.
 
 | Tool | Role |
 |---|---|
-| `tools/dsp_v2_sim.py` | Python reference implementation of the whole pipeline, plus both legacy engines for side-by-side comparison. Run against any capture. |
+| `tools/dsp_v2_sim.py` | Python reference implementation of the whole pipeline, plus the legacy GSR engine for side-by-side comparison. Run against any capture. |
 | `tools/dsp_v2_parity.cpp` + `.sh` | Compiles the **actual firmware** on the host with Arduino stubbed, replays a capture through the real `PulseTracker`/`GsrTracker`, and diffs against the Python. BPM/confidence/phase agree to 0.0000. |
-| `firmware/raw_streamer` | 500 Hz raw CSV capture for spectral ground truth. |
+| `tools/make_synthetic_capture.py` | Deterministic synthetic capture, so parity is checkable with no hardware and no recorded data. |
+| `firmware/raw_streamer` | 4-column CSV capture: 500 Hz GSR plus flagged MAX30102 FIFO samples. |
 | `firmware/dsp_v2` | On-device bench sketch; streams computed values as CSV, no LEDs. |
+| `firmware/max30102_probe` | I²C bring-up diagnostic: bus scan, config register read-back, raw FIFO pointer dump. Not part of the product. |
+
+The legacy *pulse* engine was removed from `dsp_v2_sim.py` along with the sensor it was
+tuned for — its hardcoded operating point (baseline 1712, window 1670–1750, ×10 gain) is
+a 12-bit reading of the XY1911-074, and running it against IR counts would emit beat
+times that mean nothing. The comparison it existed to make is settled in §2.2 and does
+not need re-answering on different hardware. The legacy GSR engine stays: same sensor,
+same ADC, still a valid before/after.
+
+**`samples/synthetic.csv` is a parity fixture, not a signal-quality reference.** Those
+are two different jobs. *Do the two implementations compute the same numbers from the
+same input* needs only an input that exercises every branch, and synthetic data does that
+completely, without hardware — it currently holds C++ and Python to 0.0000 on
+BPM/confidence/phase and 0.001 on arousal, tighter than any recorded capture ever did.
+*Does the tracker read the right rate off a real wrist* needs real data with ground
+truth, and nothing synthetic substitutes for it.
 
 Ground truth for heart rate comes from a **manual radial pulse count taken during the
 capture**, cross-checked against a Welch spectrum. Per-window Welch alone is not a
 reliable reference — on `bio2.log` it swings 58–131 BPM between windows.
+
+The synthetic fixture immediately earned its place: it exposed a latent bug in the Python
+reference's `GsrTracker.reset()`, which seeded `prev` with the raw ADC value where `prev`
+holds the *phasic* component (zero by construction after a reset). That injected a
+`x × FS` slope on the next sample — 35 000 counts/s on a 1400-count signal — clamping to
+`SLOPE_CLAMP` and saturating arousal for several seconds after every recalibration. The
+firmware always had it right. It survived because every recorded capture starts with a
+real contact transient that saturates arousal on *both* sides, so the two agreed at the
+1.0 ceiling; only a capture with a quiet start separates them (0.107 against 1.000).
 
 ### 4.1 On-wrist GSR recalibration
 
@@ -378,17 +547,112 @@ real SCR still reaches full scale. Then change it in **both** `dsp.h` and `dsp_v
 and re-run `tools/dsp_v2_parity.sh` — the constants are duplicated, and parity is the only
 thing that catches them drifting apart.
 
+### 4.2 MAX30102 bring-up and calibration
+
+Nothing in this subsection has been done yet. It is the debt §3.6 records, in the order
+the steps depend on each other — each one is meaningless until the one above it passes.
+
+**Step 0 — the bus survives.** ✅ *Done 2026-08-17.* Bus scan finds 0x57 and 0x76; both
+devices answer. If a GY-MAX30102 board with 1.8 V pull-ups (§1) is fitted, *both* go
+silent and the symptom presents as "the temperature sensor broke", not as a PPG problem.
+`firmware/max30102_probe` scans the bus and reads every config register back.
+
+**Step 1 — the FIFO rate.** ✅ *Done 2026-08-17: 25.09 Hz.* Everything downstream scales
+by this.
+
+```bash
+just monitor --seconds 60 | grep '\[PPG\]'
+```
+
+Expect ~25 Hz. A steady offset scales every reported BPM by exactly its ratio — 25.6 Hz
+would mean every rate reads 2.4 % low, silently. The measured 25.09 Hz is a 0.36 % bias,
+far inside the 3.19 BPM bin spacing, so no correction is applied.
+
+A rate *dip* means samples were lost to a stall. Do not look for an overflow count: this
+part's `OVF_COUNTER` is not a loss counter (§1), and rate is the detector.
+
+**Step 2 — LED current and DC operating point.** Strapped on, sitting still:
+
+```bash
+just monitor --seconds 30 | grep 'IR:'
+```
+
+| IR DC | Meaning | Action |
+|---|---|---|
+| < ~5 000 | Off skin, or LED current starved | Tighten strap; raise `MAX30102_LED_CURRENT` |
+| ~20 000 – 150 000 | Healthy operating range | Proceed |
+| > ~240 000 | Approaching the 262 143 full scale; cardiac AC is being clipped at the top | **Lower** `MAX30102_LED_CURRENT` |
+
+The failure at both ends looks identical downstream — flat signal, no rate — so read the
+DC number rather than inferring it from the LEDs. `MAX30102_LED_CURRENT` is a compile-time
+constant in `max30102.h` and needs a reflash per value; it is deliberately not a BLE
+tunable, because a value that saturates the ADC produces a capture that cannot be
+salvaged offline and should not be one slider-drag away.
+
+**Step 3 — capture and set `PI_TRUST_MIN`.** This replaces the stale 0.40 (§3.5). Three
+captures, same procedure as the analog path used:
+
+```bash
+just monitor-save 60 unworn.log     # on the bench, nothing attached
+just monitor-save 60 loose.log      # worn, deliberately slack strap
+just monitor-save 180 good.log      # worn, firm contact, sitting still
+```
+
+Read `PerfIdx` from each. The threshold goes **between the loose-but-worn p90 and the
+good-contact minimum** — the same construction as before, and for the same reason: any
+value that rejects an empty sensor must not blank the panel on a real wearer with
+mediocre contact. Then, without reflashing:
+
+```bash
+just config-set pi_trust_min <value>
+```
+
+Once it has held up across a few sessions, move the default in `dsp.h` so a config reset
+lands somewhere sensible.
+
+**Step 4 — a real regression capture.** Only after steps 1–3 pass:
+
+```bash
+just monitor-save 240 /dev/null &   # keep the port open
+# flash firmware/raw_streamer, capture with a manual radial count running
+```
+
+Save it to `samples/` with the ground-truth rate in its name and record it in §5. That
+capture is what finally lets §2.1–§2.3 be re-measured rather than carried as history, and
+what lets `just test-parity` run against something real instead of the fixture.
+
+**Step 5 — IR-DC wear gating** (`-xe2`). `unworn.log` and `good.log` from step 3 already
+contain the data; if the two IR-DC populations separate cleanly, §3.5's premise changes
+and `-6y4` becomes tractable.
+
 ---
 
 ## 5. Sample data
 
 | File | What it is | Use |
 |---|---|---|
-| `samples/bio4.csv` | 226 s raw 500 Hz, good contact, **ground truth 64 BPM** (manual count + Welch 64.1) | Primary regression case |
-| `samples/bio2.log` | 150 s raw 500 Hz, poor contact, SNR < 1, ~88 BPM | Worst-case / degradation test |
-| `samples/bio3.csv` | 204 s of on-device `dsp_v2` output (BPM, confidence, phase, arousal, tonic) | On-device behaviour reference |
+| `samples/synthetic.csv` | 60 s generated, 64 BPM injected, deterministic | **Current parity fixture.** No signal-quality meaning |
+| `samples/bio4.csv` | 226 s raw 500 Hz **analog PPG**, good contact, ground truth 64 BPM | Retired — GSR column still valid |
+| `samples/bio2.log` | 150 s raw 500 Hz **analog PPG**, poor contact, SNR < 1, ~88 BPM | Retired — GSR column still valid |
+| `samples/bio3.csv` | 204 s of on-device `dsp_v2` output (BPM, confidence, phase, arousal, tonic) | Retired for pulse; arousal/tonic still valid |
 
-Format for the raw captures is `Timestamp_ms,RawPulse,RawGSR`.
+**There is currently no MAX30102 wrist capture.** The three `bio*` files are analog
+front-end recordings; their pulse columns are readings of a sensor the bracelet no longer
+has, and their three-column format no longer parses — `dsp_v2_sim.py` rejects them with
+an explicit message rather than reinterpreting `RawPulse` as an IR channel, which would
+have produced a full set of plausible numbers from the wrong hardware. They are kept
+because their **GSR** columns are still a valid regression case for a channel nothing
+changed about, and because §2 cites them.
+
+Current raw capture format is `Timestamp_ms,RawIr,RawGSR,IrNew`. `IrNew=1` marks rows
+carrying a genuinely new FIFO sample; on `IrNew=0` rows `RawIr` is `0` and must be
+ignored — **not** held over, **not** interpolated. A zero-order hold was considered and
+rejected: the 20-sample GSR boxcar would then average across IR sample boundaries
+whenever the two clocks drifted out of alignment, which is an extra low-pass present in
+the capture and not on the device, and it would make the C++/Python parity check inexact
+in a way that reads as a rounding difference rather than a structural one.
+
+Filling this gap is step 4 of §4.2.
 
 ---
 
@@ -429,11 +693,18 @@ BPM that generic fitness apps treat as authoritative would be misleading given �
 
 All little-endian. ATT MTU negotiated to 247 so the spectrum fits one packet.
 
+Protocol is at **v2**. The MAX30102 forced it: `pulse_raw` is an 18-bit count and
+`pulse_filtered` runs to thousands, against v1 fields sized `u16` and `i16×10` for a
+12-bit ADC reading ~1800. Left alone, the raw value would have wrapped and the filtered
+value saturated at 3276.7 — both of which decode to a plausible number rather than an
+error, which is the exact failure this library exists to prevent. Both widened to 32 bits;
+`BLE_VITALS_LEN` 18 → 20, `BLE_SIGNALS_LEN` 46 → 66.
+
 | Characteristic | Mode | Rate | Size | Contents |
 |---|---|---|---|---|
-| Vitals | notify | 4 Hz | 16 B | bpm×10, confidence, arousal, perfusion×100, gsr_raw, pulse_raw, temp×100, flags (worn/strobe/mode), brightness, gsr_tonic |
-| Signals | notify | 5 Hz | 44 B | 5 batched 25 Hz samples: pulse_filtered, gsr_phasic, pulse_raw, gsr_raw + start timestamp |
-| Spectrum | notify | 1 Hz | 54 B | 48 log-scaled resonator bin powers + peak bin + BPM range |
+| Vitals | notify | 4 Hz | 20 B | bpm×10, confidence, arousal, perfusion×100, gsr_raw, **pulse_raw (u32)**, temp×100, flags (worn/strobe/mode), brightness, gsr_tonic |
+| Signals | notify | 5 Hz | 66 B | 5 batched 25 Hz samples: **pulse_filtered (i32×10)**, **pulse_raw (u32)**, gsr_phasic, gsr_raw + start timestamp |
+| Spectrum | notify | 1 Hz | 56 B | 48 log-scaled resonator bin powers + peak bin + BPM range |
 | Control | write | — | 2–3 B | set mode, set brightness, recalibrate GSR, set stream mask, reset bank |
 | Config | read/write | — | var | `[paramId][float32]` writes; read returns all tunables packed |
 | Info | read | — | var | firmware version, build date, bin count |
@@ -456,6 +727,7 @@ one responsibility each:
 |---|---|---|
 | `main_armband.ino` | setup, FreeRTOS tasks, render loop | all |
 | `libraries/BraceletDSP/src/dsp.h` | `PulseTracker`, `GsrTracker`, `WearDetect` | `<math.h>`, `<stdint.h>` |
+| `libraries/BraceletMAX30102/src/max30102.h` | MAX30102 config + FIFO drain | `<Wire.h>` |
 | `ble_service.h` / `.cpp` | GATT setup, packet packing, command dispatch | `BiometricData` snapshot + control callback |
 | `config.h` / `.cpp` | tunables struct, NVS load/save/reset | NVS |
 
@@ -463,6 +735,13 @@ The load-bearing constraint is that **`dsp.h` stays free of Arduino and BLE type
 is what allows `tools/dsp_v2_parity.sh` to keep compiling the real trackers on the host
 and proving them equal to the Python reference. BLE reads a snapshot struct and never
 reaches into tracker internals.
+
+The MAX30102 driver is a **separate library for that reason**, not for tidiness: it needs
+`<Wire.h>` and so could never live in `BraceletDSP` without costing the validation path.
+Its scope is deliberately narrow — configure the part, drain the FIFO, hand out IR counts.
+No beat detection, no SpO2, no filtering. SparkFun's MAX3010x library was not used
+because it ships its own heart-rate and SpO2 estimators, which would be a second,
+unvalidated source of numbers competing with the resonator bank that §4 exists to check.
 
 Shipped as an Arduino library (`--libraries ./libraries`) rather than a sketch-local
 header, because `dsp_v2` and `main_armband` both need it and previously carried duplicate
@@ -475,6 +754,14 @@ whole pulse engine into a class that answers one yes/no question.
 - **Web app** — single self-contained `webapp/index.html` using Web Bluetooth: live vitals
   tiles, scrolling chart for the 25 Hz signals, bar chart for the 48-bin spectrum, and
   controls for mode / brightness / recalibrate plus config sliders with reset-to-defaults.
+  The **IR raw** row names its state (`off skin` / `weak` / `good` / `CLIPPING`) against
+  the §4.2 bands rather than showing a bare count, because the two failure modes are
+  indistinguishable downstream and this is the readout you watch while adjusting strap
+  tension. Its bar is piecewise-scaled so each band gets a fixed share of the track —
+  linear against the 18-bit full scale crushed the whole off-skin→good transition into
+  the bottom third, which is precisely the range being steered. The perfusion bar is
+  scaled so the device's *live* `pi_trust_min` sits at half full, so it stays meaningful
+  without a per-sensor constant and self-corrects when the threshold is retuned.
   No build step, no dependencies. Served over HTTPS via GitHub Pages from `/webapp`.
   Requires Chrome on Android; **iOS Safari does not implement Web Bluetooth**.
 - **CLI** (`tools/blectl.py`) — Python + `bleak`. Subcommands mirror the GATT: `scan`,

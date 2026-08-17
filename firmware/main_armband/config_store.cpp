@@ -9,7 +9,14 @@ namespace {
 // Bump if BraceletConfig's field set changes shape. A stored blob from an older
 // version is discarded rather than partially reinterpreted -- a hue anchor read
 // into what used to be a threshold field would silently misbehave rather than fail.
-constexpr uint8_t CONFIG_SCHEMA_VERSION = 1;
+//
+// v2: the field set is unchanged, but the MAX30102 front end changed what
+// `piTrustMin` MEANS. A value tuned against the analog sensor's perfusion index is
+// still perfectly in range for the new one and would be loaded without complaint,
+// which is precisely the silent-wrong-number case this store is built to avoid. The
+// bump forces every device to fall back to compiled defaults once, so the threshold
+// gets re-derived from the new sensor rather than inherited from the old one.
+constexpr uint8_t CONFIG_SCHEMA_VERSION = 2;
 
 // One key per field rather than a single packed blob. Costs a few more NVS entries
 // but means a value out of plausible range can be rejected per-field instead of

@@ -2,16 +2,26 @@
 """
 Offline reference implementation of the DSP v2 pipeline.
 
-This is a deliberate mirror of the C++ in firmware/dsp_v2/dsp_v2.ino: same sample
-rates, same filter coefficients, same scalar arithmetic, same update order. It exists
-so the firmware can be validated against recorded captures (bio2.log, heartbeat*.log)
-before it is flashed, and so regressions are caught on the desktop.
+This is a deliberate mirror of the C++ in libraries/BraceletDSP: same sample rates,
+same filter coefficients, same scalar arithmetic, same update order. It exists so the
+firmware can be validated against recorded captures before it is flashed, and so
+regressions are caught on the desktop.
 
 Usage:
-    uv run --with numpy,scipy tools/dsp_v2_sim.py bio2.log
-    uv run --with numpy,scipy tools/dsp_v2_sim.py bio2.log --compare
+    uv run --with numpy,scipy tools/dsp_v2_sim.py capture.csv
+    uv run --with numpy,scipy tools/dsp_v2_sim.py capture.csv --compare
 
-Input format is the raw_streamer CSV: Timestamp_ms,RawPulse,RawGSR at 500 Hz.
+Input format is the raw_streamer CSV: Timestamp_ms,RawIr,RawGSR,IrNew.
+
+The two front ends no longer share a clock. GSR is sampled at 500 Hz and decimated
+20:1; PPG arrives from the MAX30102's own FIFO at ~25 Hz, and IrNew marks the rows
+where a new sample actually landed. PulseTracker.update() is called once per IrNew=1
+row and RawIr is ignored entirely on the others -- it is 0 there, not a held value.
+
+Captures in the old three-column Timestamp_ms,RawPulse,RawGSR format are from the
+analog front end and are rejected by load() rather than reinterpreted. They are not
+merely stale: the pulse column is a 12-bit ADC reading of a different sensor, and
+every threshold derived from it (DESIGN.md section 2) belongs to that hardware.
 """
 
 import argparse
@@ -22,9 +32,9 @@ import sys
 # ---------------------------------------------------------------------------
 # Configuration (keep in sync with firmware/dsp_v2/dsp_v2.ino)
 # ---------------------------------------------------------------------------
-FS_RAW = 500.0
+FS_RAW = 500.0  # GSR only; the MAX30102 clocks its own FIFO
 DECIM = 20  # 500 Hz -> 25 Hz. The 40 ms boxcar nulls 25/50/75 Hz (mains).
-FS = FS_RAW / DECIM
+FS = FS_RAW / DECIM  # 25 Hz -- the rate BOTH trackers run at
 
 # Pulse chain
 HP_HZ = 0.5  # baseline tracker
@@ -242,7 +252,18 @@ class GsrTracker:
         """Long-press recalibration: re-anchor tonic and the auto-range envelope."""
         self.tonic = x
         self.smooth = x
-        self.prev = x
+        # `prev` holds the previous PHASIC value, not the previous raw sample, and
+        # phasic is zero by construction immediately after a reset (smooth == tonic).
+        # Seeding it with x made the next update see slope = x * FS -- 35000 counts/s
+        # on a 1400-count signal -- which clamps to SLOPE_CLAMP and drives arousal to
+        # full scale for several seconds after every recalibration. dsp.h has always
+        # had this right (`prevPhasic = 0.0f`); this was a transcription error here.
+        #
+        # It went unnoticed because the captures it was checked against start with a
+        # real contact transient that saturates arousal on BOTH sides, so the two
+        # agreed at the 1.0 ceiling. samples/synthetic.csv starts quiet and separates
+        # them: 0.107 (C++) against 1.000 (here).
+        self.prev = 0.0
         self.drive = 0.0
         self.range = RANGE_FLOOR
         self.arousal = 0.0
@@ -283,32 +304,18 @@ class GsrTracker:
 
 # ---------------------------------------------------------------------------
 # Legacy algorithm, transcribed from main_armband.ino for side-by-side comparison
+#
+# Only the GSR engine survives here. The legacy threshold-and-refractory pulse
+# detector was removed along with the analog PPG sensor it was tuned for: its
+# hardcoded operating point (baseline 1712, window 1670-1750, x10 gain) is a 12-bit
+# ADC reading of the XY1911-074, and running it against 18-bit MAX30102 IR counts
+# would emit beat times that mean nothing. The comparison it existed to make is
+# settled and recorded in DESIGN.md section 2.2; re-running it against a different
+# sensor would not re-answer it.
+#
+# The GSR path is unchanged -- same sensor, same ADC, same rate -- so this one is
+# still a valid before/after.
 # ---------------------------------------------------------------------------
-def legacy_pulse(t_ms, pulse):
-    hp = 1712.0
-    pmax, pmin = 1750.0, 1670.0
-    last = 0.0
-    rising = False
-    bpm = 78.0
-    beats = []
-    for t, raw in zip(t_ms, pulse):
-        hp = 0.998 * hp + 0.002 * raw
-        ac = 2000.0 + (raw - hp) * 10.0
-        pmax = max(pmax, ac) - 0.1
-        pmin = min(pmin, ac) + 0.1
-        thr = pmin + (pmax - pmin) * 0.70
-        if ac > thr and not rising and (t - last) > 450:
-            rising = True
-            ibi = t - last
-            last = t
-            if 450 <= ibi <= 1400:
-                bpm = bpm * 0.8 + (60000.0 / ibi) * 0.2
-                beats.append(t)
-        elif ac < thr:
-            rising = False
-    return beats, bpm
-
-
 def legacy_gsr(gsr):
     sm = 1350.0
     base = 1350.0
@@ -331,48 +338,75 @@ def legacy_gsr(gsr):
 
 
 def load(path):
-    t, p, g = [], [], []
+    """Read a raw_streamer capture. Returns (t_ms, ir, gsr, ir_new).
+
+    Rejects the pre-MAX30102 three-column format loudly. Silently treating its
+    RawPulse column as an IR channel would produce a full set of plausible numbers
+    from the wrong sensor, which is the one outcome this harness exists to prevent.
+    """
+    t, ir, g, new = [], [], [], []
+    saw_row = False
     with open(path) as fh:
         for line in fh:
             parts = line.strip().split(",")
-            if len(parts) != 3:
+            if len(parts) == 3:
+                saw_row = True
+                continue
+            if len(parts) != 4:
                 continue
             try:
-                ts, rp, rg = float(parts[0]), float(parts[1]), float(parts[2])
+                ts = float(parts[0])
+                v_ir = float(parts[1])
+                v_g = float(parts[2])
+                v_new = int(parts[3])
             except ValueError:
-                continue  # header
+                continue  # header or comment
             t.append(ts)
-            p.append(rp)
-            g.append(rg)
-    return t, p, g
+            ir.append(v_ir)
+            g.append(v_g)
+            new.append(v_new)
+
+    if not t and saw_row:
+        sys.exit(
+            f"{path}: this is a 3-column analog capture "
+            f"(Timestamp_ms,RawPulse,RawGSR). The PPG front end is now a MAX30102 "
+            f"and captures must carry Timestamp_ms,RawIr,RawGSR,IrNew. Recapture "
+            f"with firmware/raw_streamer; see DESIGN.md section 5."
+        )
+    return t, ir, g, new
 
 
 def run(path, report_hz=1.0, verbose=True):
-    t, p, g = load(path)
+    t, ir, g, ir_new = load(path)
     if not t:
         sys.exit(f"{path}: no usable samples")
 
     pulse = PulseTracker()
     gsr = GsrTracker()
 
-    acc_p = acc_g = 0.0
+    acc_g = 0.0
     acc_n = 0
     last_report = t[0]
     last_est = t[0]
     rows = []
 
     for i in range(len(t)):
-        acc_p += p[i]
+        # PPG is event-driven off the sensor FIFO, so it advances on its own rows and
+        # not on the decimation boundary. The firmware drains the FIFO at that
+        # boundary instead, which groups the calls differently but leaves the SEQUENCE
+        # of PulseTracker.update() calls identical -- and the tracker is advanced per
+        # sample, not per wall-clock instant, so the two stay bit-identical.
+        if ir_new[i]:
+            pulse.update(ir[i])
+
         acc_g += g[i]
         acc_n += 1
         if acc_n < DECIM:
             continue
-        xp = acc_p / DECIM
         xg = acc_g / DECIM
-        acc_p = acc_g = 0.0
+        acc_g = 0.0
         acc_n = 0
 
-        pulse.update(xp)
         arousal, tonic, phasic = gsr.update(xg)
 
         # Render-rate work: the firmware does this at 60 FPS; 25 Hz here is the
@@ -386,16 +420,22 @@ def run(path, report_hz=1.0, verbose=True):
             rows.append((t[i] / 1000.0, bpm, conf, phase, arousal, tonic))
 
     if verbose:
-        print(f"# {path}  ({(t[-1] - t[0]) / 1000.0:.1f} s, {len(t)} raw samples)")
+        dur = (t[-1] - t[0]) / 1000.0
+        n_ir = sum(ir_new)
+        # The effective PPG rate is a property of the sensor's oscillator, not of this
+        # script, and every resonator bin frequency assumes it is FS. Print it so a
+        # capture that would scale every BPM is visible before the numbers are trusted.
+        print(f"# {path}  ({dur:.1f} s, {len(t)} raw rows, {n_ir} PPG samples "
+              f"= {n_ir / dur if dur else 0:.2f} Hz, expected {FS:.2f})")
         print("time_s,bpm,confidence,phase_rad,arousal,tonic")
         for r in rows:
             print(
                 f"{r[0]:.1f},{r[1]:.1f},{r[2]:.2f},{r[3]:.2f},{r[4]:.3f},{r[5]:.1f}"
             )
-    return t, p, g, rows
+    return t, ir, g, rows
 
 
-def summarise(path, rows, t, p, g, settle_s=20.0):
+def summarise(path, rows, t, ir, g, settle_s=20.0):
     import statistics
 
     t0 = t[0] / 1000.0
@@ -415,18 +455,26 @@ def summarise(path, rows, t, p, g, settle_s=20.0):
         else:
             gap_start = None
 
-    lb, lbpm = legacy_pulse(t, p)
     dur = (t[-1] - t[0]) / 1000.0
     lgsr = legacy_gsr(g)
 
+    # IR DC level, from the rows that carry a real sample. This is the first thing to
+    # check on a new capture: too low and the LED current is starved or the sensor is
+    # off the skin; near 2^18 and the ADC is clipping the cardiac AC away at the top
+    # of its range. Both look like "no pulse" downstream. See DESIGN.md section 4.2.
+    ir_live = [v for v in ir if v > 0]
+
     print(f"\n=== {path} ===")
     print(f"duration                 {dur:.1f} s")
+    print("--- ppg front end ---")
+    if ir_live:
+        print(f"IR DC median             {statistics.median(ir_live):.0f}"
+              f"  (min {min(ir_live):.0f} max {max(ir_live):.0f}, full scale 262143)")
+        print(f"IR sample rate           {len(ir_live) / dur:.2f} Hz"
+              f"  (dsp assumes {FS:.2f})")
+    else:
+        print("IR                       no samples -- MAX30102 absent during capture")
     print("--- pulse ---")
-    print(f"legacy  avg BPM          {len(lb) / dur * 60:.1f}  ({len(lb)} beats)")
-    if len(lb) > 2:
-        ibi = [lb[i + 1] - lb[i] for i in range(len(lb) - 1)]
-        print(f"legacy  IBI std          {statistics.pstdev(ibi):.1f} ms"
-              f"  (max gap {max(ibi):.0f} ms)")
     print(f"dsp_v2  BPM median       {statistics.median(bpms):.1f}")
     print(f"dsp_v2  BPM std          {statistics.pstdev(bpms):.1f}")
     print(f"dsp_v2  BPM min/max      {min(bpms):.1f} / {max(bpms):.1f}")
@@ -504,9 +552,9 @@ def main():
         return
 
     for path in args.logs:
-        t, p, g, rows = run(path, report_hz=args.rate, verbose=not args.compare)
+        t, ir, g, rows = run(path, report_hz=args.rate, verbose=not args.compare)
         if args.compare:
-            summarise(path, rows, t, p, g)
+            summarise(path, rows, t, ir, g)
 
 
 if __name__ == "__main__":

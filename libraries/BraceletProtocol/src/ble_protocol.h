@@ -26,7 +26,14 @@
 
 // Bump on ANY change to a layout below. Consumers must reject packets they do not
 // recognise rather than guess.
-#define BLE_PROTOCOL_VERSION 1
+//
+// v2 (MAX30102 front end): pulseRaw widened u16 -> u32 and pulseFiltered i16 -> i32
+// in both Vitals and Signals. The MAX30102 IR channel is an 18-bit count with a DC
+// level in the tens of thousands, against a v1 layout sized for a 12-bit ADC reading
+// ~1800. Left at u16 the raw value would have wrapped and the filtered value would
+// have saturated at 3276.7 -- both of which decode to a plausible number rather than
+// an error, which is the exact failure mode this header exists to prevent.
+#define BLE_PROTOCOL_VERSION 2
 
 // ---------------------------------------------------------------------------
 // Service and characteristic UUIDs
@@ -45,8 +52,8 @@
 #define BLE_SIGNALS_BATCH  5     // 25 Hz samples per notification -> 5 Hz packets
 #define BLE_SPECTRUM_BINS  48    // must match N_BINS in BraceletDSP
 
-#define BLE_VITALS_LEN     18
-#define BLE_SIGNALS_LEN    (6 + BLE_SIGNALS_BATCH * 8)   // 46
+#define BLE_VITALS_LEN     20
+#define BLE_SIGNALS_LEN    (6 + BLE_SIGNALS_BATCH * 12)  // 66
 #define BLE_SPECTRUM_LEN   (8 + BLE_SPECTRUM_BINS)       // 56
 #define BLE_CONTROL_MAXLEN 4
 #define BLE_CONFIG_WRITE_LEN 5
@@ -121,6 +128,12 @@ static inline uint32_t blegetU32(const uint8_t *b, size_t o) {
   return (uint32_t)b[o] | ((uint32_t)b[o + 1] << 8) |
          ((uint32_t)b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24);
 }
+static inline void bleputI32(uint8_t *b, size_t o, int32_t v) {
+  bleputU32(b, o, (uint32_t)v);
+}
+static inline int32_t blegetI32(const uint8_t *b, size_t o) {
+  return (int32_t)blegetU32(b, o);
+}
 
 // Clamp before narrowing, so an out-of-range value saturates visibly instead of
 // wrapping into a plausible wrong number.
@@ -136,6 +149,12 @@ static inline int16_t bleScaleI16(float v, float scale) {
   if (s > 32767.0f) return 32767;
   return (int16_t)(s >= 0.0f ? s + 0.5f : s - 0.5f);
 }
+static inline int32_t bleScaleI32(float v, float scale) {
+  double s = (double)v * (double)scale;
+  if (s < -2147483648.0) return INT32_MIN;
+  if (s > 2147483647.0) return INT32_MAX;
+  return (int32_t)(s >= 0.0 ? s + 0.5 : s - 0.5);
+}
 static inline uint8_t bleUnitToU8(float v) {
   if (v <= 0.0f) return 0;
   if (v >= 1.0f) return 255;
@@ -143,7 +162,7 @@ static inline uint8_t bleUnitToU8(float v) {
 }
 
 // ---------------------------------------------------------------------------
-// Vitals -- 18 bytes, notified at 4 Hz
+// Vitals -- 20 bytes, notified at 4 Hz
 //
 //  0  u8   protocol version
 //  1  u8   flags (worn, pulseTrusted, strobe, mode<<3)
@@ -151,12 +170,12 @@ static inline uint8_t bleUnitToU8(float v) {
 //  4  u8   confidence 0..255
 //  5  u8   arousal 0..255
 //  6  u16  perfusion percent x100
-//  8  u16  gsr raw
-// 10  u16  pulse raw
-// 12  i16  temperature C x100
-// 14  u16  gsr tonic
-// 16  u8   brightness
-// 17  u8   reserved
+//  8  u16  gsr raw (12-bit ADC counts)
+// 10  u32  pulse raw (MAX30102 IR, 18-bit counts)
+// 14  i16  temperature C x100
+// 16  u16  gsr tonic
+// 18  u8   brightness
+// 19  u8   reserved
 // ---------------------------------------------------------------------------
 struct BleVitals {
   float bpm = 0.0f;
@@ -166,7 +185,7 @@ struct BleVitals {
   float tempC = 0.0f;
   float gsrTonic = 0.0f;
   uint16_t gsrRaw = 0;
-  uint16_t pulseRaw = 0;
+  uint32_t pulseRaw = 0;
   uint8_t brightness = 0;
   uint8_t mode = 0;
   bool worn = false;
@@ -188,11 +207,11 @@ static inline size_t blePackVitals(uint8_t *b, const BleVitals &v) {
   bleputU8(b, 5, bleUnitToU8(v.arousal));
   bleputU16(b, 6, bleScaleU16(v.perfusion, 100.0f));
   bleputU16(b, 8, v.gsrRaw);
-  bleputU16(b, 10, v.pulseRaw);
-  bleputI16(b, 12, bleScaleI16(v.tempC, 100.0f));
-  bleputU16(b, 14, bleScaleU16(v.gsrTonic, 1.0f));
-  bleputU8(b, 16, v.brightness);
-  bleputU8(b, 17, 0);
+  bleputU32(b, 10, v.pulseRaw);
+  bleputI16(b, 14, bleScaleI16(v.tempC, 100.0f));
+  bleputU16(b, 16, bleScaleU16(v.gsrTonic, 1.0f));
+  bleputU8(b, 18, v.brightness);
+  bleputU8(b, 19, 0);
   return BLE_VITALS_LEN;
 }
 
@@ -209,29 +228,35 @@ static inline bool bleUnpackVitals(const uint8_t *b, size_t len, BleVitals &v) {
   v.arousal = blegetU8(b, 5) / 255.0f;
   v.perfusion = blegetU16(b, 6) / 100.0f;
   v.gsrRaw = blegetU16(b, 8);
-  v.pulseRaw = blegetU16(b, 10);
-  v.tempC = blegetI16(b, 12) / 100.0f;
-  v.gsrTonic = (float)blegetU16(b, 14);
-  v.brightness = blegetU8(b, 16);
+  v.pulseRaw = blegetU32(b, 10);
+  v.tempC = blegetI16(b, 14) / 100.0f;
+  v.gsrTonic = (float)blegetU16(b, 16);
+  v.brightness = blegetU8(b, 18);
   return true;
 }
 
 // ---------------------------------------------------------------------------
-// Signals -- 46 bytes, 5 batched 25 Hz samples notified at 5 Hz
+// Signals -- 66 bytes, 5 batched 25 Hz samples notified at 5 Hz
 //
 //  0  u8   protocol version
 //  1  u8   sample count
 //  2  u32  timestamp_ms of the first sample
-//  6  then count * 8 bytes:
-//         +0 i16 pulse filtered x10
-//         +2 i16 gsr phasic x10
-//         +4 u16 pulse raw
-//         +6 u16 gsr raw
+//  6  then count * 12 bytes:
+//         +0  i32 pulse filtered x10
+//         +4  u32 pulse raw (MAX30102 IR, 18-bit counts)
+//         +8  i16 gsr phasic x10
+//         +10 u16 gsr raw
+//
+// pulseFiltered is i32 rather than i16 because it is the cardiac AC of an 18-bit IR
+// channel. On the v1 analog path it was a few counts; here it runs to thousands on
+// good contact, and x10 scaling put that past i16 well before the signal was
+// interesting. Kept at x10 rather than dropping to unit scale so a weak signal still
+// carries a decimal.
 // ---------------------------------------------------------------------------
 struct BleSignalSample {
   float pulseFiltered = 0.0f;
   float gsrPhasic = 0.0f;
-  uint16_t pulseRaw = 0;
+  uint32_t pulseRaw = 0;
   uint16_t gsrRaw = 0;
 };
 
@@ -242,13 +267,13 @@ static inline size_t blePackSignals(uint8_t *b, uint32_t firstTimestampMs,
   bleputU8(b, 1, count);
   bleputU32(b, 2, firstTimestampMs);
   for (uint8_t i = 0; i < count; i++) {
-    size_t o = 6 + (size_t)i * 8;
-    bleputI16(b, o + 0, bleScaleI16(s[i].pulseFiltered, 10.0f));
-    bleputI16(b, o + 2, bleScaleI16(s[i].gsrPhasic, 10.0f));
-    bleputU16(b, o + 4, s[i].pulseRaw);
-    bleputU16(b, o + 6, s[i].gsrRaw);
+    size_t o = 6 + (size_t)i * 12;
+    bleputI32(b, o + 0, bleScaleI32(s[i].pulseFiltered, 10.0f));
+    bleputU32(b, o + 4, s[i].pulseRaw);
+    bleputI16(b, o + 8, bleScaleI16(s[i].gsrPhasic, 10.0f));
+    bleputU16(b, o + 10, s[i].gsrRaw);
   }
-  return 6 + (size_t)count * 8;
+  return 6 + (size_t)count * 12;
 }
 
 static inline bool bleUnpackSignals(const uint8_t *b, size_t len,
@@ -258,14 +283,14 @@ static inline bool bleUnpackSignals(const uint8_t *b, size_t len,
   if (blegetU8(b, 0) != BLE_PROTOCOL_VERSION) return false;
   count = blegetU8(b, 1);
   if (count > BLE_SIGNALS_BATCH) return false;
-  if (len < 6 + (size_t)count * 8) return false;
+  if (len < 6 + (size_t)count * 12) return false;
   firstTimestampMs = blegetU32(b, 2);
   for (uint8_t i = 0; i < count; i++) {
-    size_t o = 6 + (size_t)i * 8;
-    s[i].pulseFiltered = blegetI16(b, o + 0) / 10.0f;
-    s[i].gsrPhasic = blegetI16(b, o + 2) / 10.0f;
-    s[i].pulseRaw = blegetU16(b, o + 4);
-    s[i].gsrRaw = blegetU16(b, o + 6);
+    size_t o = 6 + (size_t)i * 12;
+    s[i].pulseFiltered = blegetI32(b, o + 0) / 10.0f;
+    s[i].pulseRaw = blegetU32(b, o + 4);
+    s[i].gsrPhasic = blegetI16(b, o + 8) / 10.0f;
+    s[i].gsrRaw = blegetU16(b, o + 10);
   }
   return true;
 }

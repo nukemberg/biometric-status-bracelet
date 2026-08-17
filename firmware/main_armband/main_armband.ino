@@ -20,6 +20,20 @@
  * beat *phase* from one structure. The LEDs are driven by a phase-locked oscillator,
  * so the animation stays smooth at frame rate and cannot stall when individual beats
  * are unrecoverable -- which is the behaviour that actually matters here.
+ *
+ * PPG front end: MAX30102, not the ADC
+ * ------------------------------------
+ * The analog pulse sensor is gone. PPG now comes from a MAX30102 on the same I2C bus
+ * as the BME280 (addr 0x57 vs 0x76/0x77 -- no collision), delivering 18-bit IR counts
+ * from its own FIFO at 25 Hz. GSR still runs the 500 Hz ADC and the 20-sample boxcar,
+ * so this task keeps its 2 ms tick; the PPG channel is simply drained at the same
+ * decimation boundary instead of being sampled and averaged.
+ *
+ * The resonator bank, the filters and every coefficient are unchanged -- the sample
+ * rate into PulseTracker is still 25 Hz. What DID change is the meaning of the
+ * numbers: raw counts, filtered amplitude and the perfusion index are all on a new
+ * scale, so PI_TRUST_MIN and the SNR figures in DESIGN.md section 2 no longer apply
+ * and samples/bio2.log and bio4.csv are no longer valid regression cases.
  */
 
 #include <Arduino.h>
@@ -27,28 +41,35 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <FastLED.h>
+#include <max30102.h>
 #include <math.h>
 
 // ============================================================================
 // MCU HARDWARE SELECTION
 // ============================================================================
 // ESP32-S3 is the deployment target; the WROOM-32 DevKit is the bench rig every
-// capture in samples/ was taken on. Analog sensors must stay on ADC1 -- ADC2 is
-// unusable on both chips while the radio is active.
+// capture in samples/ was taken on. GSR is the only analog sensor left and must stay
+// on ADC1 -- ADC2 is unusable on both chips while the radio is active.
+//
+// PIN_PPG_INT is wired but not read. The MAX30102's PPG_RDY interrupt is enabled in
+// the driver so the line carries a usable signal, but the DSP task polls the FIFO
+// pointers at its 25 Hz decimation boundary instead, which costs one 3-byte I2C read
+// per 40 ms and needs no ISR. The pin is claimed here so a future FIFO-driven path
+// does not have to re-route the harness.
 //#define MCU_ESP32_S3
 
 #ifdef MCU_ESP32_S3
   #define PIN_GSR         1     // ADC1_CH0
-  #define PIN_PULSE       2     // ADC1_CH1
   #define PIN_SDA         8
   #define PIN_SCL         9
+  #define PIN_PPG_INT     10
   #define PIN_BUTTON      5
   #define PIN_LED         4
 #else // Standard ESP32 DevKit WROOM-32
   #define PIN_GSR         34
-  #define PIN_PULSE       35
   #define PIN_SDA         21
   #define PIN_SCL         22
+  #define PIN_PPG_INT     19
   #define PIN_BUTTON      18
   #define PIN_LED         4
 #endif
@@ -60,6 +81,10 @@
 CRGB leds[NUM_LEDS];
 Adafruit_BME280 bme;
 bool bmeConnected = false;
+
+// Shares SDA/SCL with the BME280. Addresses do not collide (0x57 vs 0x76/0x77).
+Max30102 ppg;
+bool ppgConnected = false;
 
 // All pulse/GSR/wear DSP lives in libraries/BraceletDSP. It is kept free of
 // Arduino and BLE types so tools/dsp_v2_parity.sh can compile these exact
@@ -74,7 +99,7 @@ bool bmeConnected = false;
 BraceletConfig cfg;
 
 struct BiometricData {
-  uint16_t pulseRaw = 0;
+  uint32_t pulseRaw = 0;    // MAX30102 IR, 18-bit counts
   float bpm = DEFAULT_BPM;
   float confidence = 0.0;   // 0..1, peak share of resonator-bank power
   float phase = 0.0;        // radians, beat phase from the winning resonator
@@ -126,6 +151,16 @@ uint32_t configDirtyMs = 0;
 
 WearDetect wear;
 
+// PPG front-end health, written only by the DSP task and read only by the render loop
+// for the periodic serial report -- the same single-writer pattern as the reset request
+// flags above, so no lock is needed for two aligned 32-bit values.
+//
+// ppgHz is not a nicety. Every resonator bin frequency in dsp.h is derived from
+// DSP_HZ = 25, but the MAX30102 clocks its FIFO off its own oscillator, so if this
+// reads 25.6 then every BPM the device reports is 2.4 % low with nothing else looking
+// wrong. Measuring it is the only way that error is ever visible. See DESIGN.md 4.2.
+volatile float ppgHz = 0.0f;
+
 // Measured on core 0, where a NimBLE controller task will later compete for time.
 // Reported every 10 s and then reset, so each line describes a fresh window.
 JitterMonitor jitter;
@@ -134,10 +169,22 @@ portMUX_TYPE jitterMux = portMUX_INITIALIZER_UNLOCKED;
 // ============================================================================
 // SIGNAL STREAM RING BUFFER
 // ============================================================================
-// The DSP task produces one sample per 25 Hz tick; the render loop drains five at a
-// time and notifies at 5 Hz. Sized well above that so a late drain loses nothing --
-// dropping samples silently would put gaps in a stream whose entire purpose is
-// offline analysis, and the timestamps would still look continuous.
+// One entry per MAX30102 FIFO sample -- nominally 25 Hz, the same rate as before, but
+// now paced by the sensor's oscillator rather than by this task's tick. The render
+// loop drains five at a time and notifies at 5 Hz. Sized well above that so a late
+// drain loses nothing -- dropping samples silently would put gaps in a stream whose
+// entire purpose is offline analysis, and the timestamps would still look continuous.
+//
+// Pushing per PPG sample rather than per decimation tick keeps the pulse trace
+// gapless even when a tick drains zero or two samples, which is exactly what the two
+// clocks running independently will produce.
+//
+// Consequence worth knowing: the timestamp is when the sample was DRAINED, not when
+// the sensor took it. A tick that hands over two samples stamps both within a few
+// microseconds of each other, even though they are 40 ms apart in the sensor's own
+// time. The samples themselves are real and correctly ordered; only the arrival time
+// is bursty. Synthesising evenly spaced timestamps was rejected -- it would invent
+// data that looks more precise than what we actually know.
 #define SIGBUF_LEN 32
 BleSignalSample sigBuf[SIGBUF_LEN];
 uint32_t sigTimestamp[SIGBUF_LEN];
@@ -250,10 +297,12 @@ void processButton() {
 // CORE 0 TASK: SENSOR SAMPLING & DSP
 // ============================================================================
 void TaskSensorDSP(void *pvParameters) {
-  uint32_t accPulse = 0, accGsr = 0;
+  uint32_t accGsr = 0;
   uint8_t accN = 0;
-  uint16_t lastPulse = 0, lastGsr = 0;
+  uint32_t lastIr = 0;
+  uint16_t lastGsr = 0;
   unsigned long lastBmeRead = 0;
+  unsigned long lastPpgStat = 0;
 
   TickType_t lastWake = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(RAW_PERIOD_MS);
@@ -266,17 +315,14 @@ void TaskSensorDSP(void *pvParameters) {
     jitter.tick(micros(), RAW_PERIOD_MS * 1000);
     portEXIT_CRITICAL(&jitterMux);
 
-    // One read per channel per tick; the boxcar below does the averaging, so the
-    // old 16-read burst was redundant work.
-    lastPulse = analogRead(PIN_PULSE);
-    lastGsr   = analogRead(PIN_GSR);
-    accPulse += lastPulse;
-    accGsr   += lastGsr;
+    // GSR only. One read per tick; the boxcar below does the averaging, so the old
+    // 16-read burst was redundant work. PPG no longer touches the ADC at all.
+    lastGsr = analogRead(PIN_GSR);
+    accGsr += lastGsr;
 
     if (++accN >= DECIM) {
-      float xp = (float)accPulse / (float)DECIM;
       float xg = (float)accGsr / (float)DECIM;
-      accPulse = accGsr = 0;
+      accGsr = 0;
       accN = 0;
 
       if (gsrResetRequest) {
@@ -333,29 +379,39 @@ void TaskSensorDSP(void *pvParameters) {
         Serial.println(F("[Config] saved to NVS"));
       }
 
-      pulse.update(xp);
       gsr.update(xg);
 
-      // Only pay for stream collection when a client is actually subscribed.
-      if (BleService::streamMask() & STREAM_SIGNALS) {
-        portENTER_CRITICAL(&sigMux);
-        uint8_t next = (uint8_t)((sigHead + 1) % SIGBUF_LEN);
-        if (next == sigTail) {
-          // Full: discard the OLDEST so the stream stays current. Dropping the
-          // newest instead would keep the data contiguous but drifting ever further
-          // behind real time, which looks like clean data and is not.
-          sigTail = (uint8_t)((sigTail + 1) % SIGBUF_LEN);
-          sigDropped++;
-        }
-        {
+      // Drain whatever the MAX30102 has ready. At 25 Hz against a 25 Hz tick this is
+      // normally one sample, occasionally zero or two as the two clocks drift past
+      // each other -- all three are expected, none is an error. Eight is far more
+      // headroom than that needs, and bounds the I2C burst so a stalled tick cannot
+      // hold the bus for a whole FIFO's worth of data.
+      uint32_t irBatch[8];
+      uint8_t irCount = ppgConnected ? ppg.read(irBatch, nullptr, 8) : 0;
+
+      for (uint8_t i = 0; i < irCount; i++) {
+        lastIr = irBatch[i];
+        pulse.update((float)lastIr);
+
+        // Only pay for stream collection when a client is actually subscribed.
+        if (BleService::streamMask() & STREAM_SIGNALS) {
+          portENTER_CRITICAL(&sigMux);
+          uint8_t next = (uint8_t)((sigHead + 1) % SIGBUF_LEN);
+          if (next == sigTail) {
+            // Full: discard the OLDEST so the stream stays current. Dropping the
+            // newest instead would keep the data contiguous but drifting ever further
+            // behind real time, which looks like clean data and is not.
+            sigTail = (uint8_t)((sigTail + 1) % SIGBUF_LEN);
+            sigDropped++;
+          }
           sigBuf[sigHead].pulseFiltered = pulse.filtered;
           sigBuf[sigHead].gsrPhasic = gsr.smooth - gsr.tonic;
-          sigBuf[sigHead].pulseRaw = lastPulse;
+          sigBuf[sigHead].pulseRaw = lastIr;
           sigBuf[sigHead].gsrRaw = lastGsr;
           sigTimestamp[sigHead] = millis();
           sigHead = next;
+          portEXIT_CRITICAL(&sigMux);
         }
-        portEXIT_CRITICAL(&sigMux);
       }
 
       float pi = pulse.perfusion();
@@ -367,12 +423,19 @@ void TaskSensorDSP(void *pvParameters) {
       bioDataLock();
       bio.gsrExcitement = gsr.arousal;
       bio.gsrTonic = gsr.tonic;
-      bio.pulseRaw = lastPulse;
+      bio.pulseRaw = lastIr;
       bio.gsrRaw = lastGsr;
       bio.perfusion = pi;
       bio.worn = worn;
       bio.pulseTrusted = wear.pulseTrusted;
       bioDataUnlock();
+    }
+
+    // PPG rate/overflow census, kept on this task so nothing else touches the driver.
+    if (ppgConnected && (millis() - lastPpgStat > 10000)) {
+      lastPpgStat = millis();
+      float hz = ppg.measuredHz((uint32_t)millis());
+      if (hz > 0.0f) ppgHz = hz;
     }
 
     if (bmeConnected && (millis() - lastBmeRead > 500)) {
@@ -575,6 +638,7 @@ void setup() {
   delay(1000);
 
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+  // GSR is the only ADC channel left; the MAX30102 brings its own 18-bit converter.
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
@@ -595,9 +659,18 @@ void setup() {
   // Root cause still wants a real current measurement; see -av5.
 
   Wire.begin(PIN_SDA, PIN_SCL);
+  // 400 kHz. The bus now carries the 25 Hz PPG drain as well as the 2 Hz BME280 read;
+  // at 100 kHz a 6-byte FIFO burst plus its pointer read is a meaningful slice of the
+  // 40 ms decimation budget on the same task that has to hit a 2 ms tick.
+  Wire.setClock(400000);
+
   if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
     bmeConnected = true;
   }
+
+  ppgConnected = ppg.begin(Wire);
+  Serial.println(ppgConnected ? F("[boot] MAX30102 ready (IR, 25 Hz FIFO)")
+                              : F("[boot] MAX30102 NOT FOUND -- pulse will not track"));
 
   // Started after the DSP task so the jitter monitor has a clean window before the
   // radio exists; -a75 compares the two.
@@ -733,6 +806,7 @@ void loop() {
     bool pulseTrusted = bio.pulseTrusted;
     float pi = bio.perfusion;
     uint16_t gsrRaw = bio.gsrRaw;
+    uint32_t irRaw = bio.pulseRaw;
     bioDataUnlock();
 
     if (!worn) {
@@ -744,7 +818,8 @@ void loop() {
       Serial.print(GSR_WORN_MIN);
       Serial.print(F("-"));
       Serial.print(GSR_WORN_MAX);
-      Serial.println(F(")"));
+      Serial.print(F(") | IR: "));
+      Serial.println(irRaw);
     } else {
       Serial.print(F("[Biometrics] Live BPM: "));
       Serial.print(bpm, 1);
@@ -757,6 +832,8 @@ void loop() {
       Serial.print(F(" C | PerfIdx: "));
       Serial.print(pi, 2);
       Serial.print(pulseTrusted ? F("% (trusted)") : F("% (SEARCHING)"));
+      Serial.print(F(" | IR: "));
+      Serial.print(irRaw);
       Serial.print(F(" | Mode: "));
       Serial.println(mode);
     }
@@ -785,6 +862,21 @@ void loop() {
       Serial.print(jover);
       Serial.print(F("/"));
       Serial.println(jn);
+    }
+
+    // Reported next to the jitter line because it answers the same question for the
+    // other front end: is the sample clock the DSP assumes actually the one it gets.
+    if (ppgConnected) {
+      // Rate is the health metric, not an overflow count -- this part's OVF_COUNTER
+      // is not a loss counter (see max30102.h). A dip below ~25 means samples were
+      // lost to a stall; a steady offset from 25 scales every BPM by that ratio.
+      Serial.print(F("[PPG] fifo "));
+      Serial.print(ppgHz, 2);
+      Serial.print(F(" Hz (dsp assumes "));
+      Serial.print(DSP_HZ);
+      Serial.println(F(")"));
+    } else {
+      Serial.println(F("[PPG] MAX30102 absent -- BPM is frozen at its last value"));
     }
     lastJitterPrint = now;
   }

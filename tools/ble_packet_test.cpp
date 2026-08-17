@@ -87,7 +87,7 @@ static void testVitals() {
   v.tempC = 26.25f;
   v.gsrTonic = 1435.0f;
   v.gsrRaw = 1285;
-  v.pulseRaw = 1810;
+  v.pulseRaw = 84213;   // MAX30102 IR DC, mid-range for good wrist contact
   v.brightness = 60;
   v.mode = 2;
   v.worn = true;
@@ -100,16 +100,16 @@ static void testVitals() {
 
   // flags: worn(0x01) | trusted(0x02) | mode 2 << 3 (0x10) = 0x13
   // bpm 643 = 0x0283 ; perfusion 160 = 0x00A0 ; gsr 1285 = 0x0505
-  // pulse 1810 = 0x0712 ; temp 2625 = 0x0A41 ; tonic 1435 = 0x059B
+  // pulse 84213 = 0x000148F5 ; temp 2625 = 0x0A41 ; tonic 1435 = 0x059B
   const uint8_t want[BLE_VITALS_LEN] = {
-      0x01,        // version
+      0x02,        // version
       0x13,        // flags
       0x83, 0x02,  // bpm x10 = 643
       0x40,        // confidence 0.25 -> 64
       0x80,        // arousal 0.5 -> 128
       0xA0, 0x00,  // perfusion x100 = 160
       0x05, 0x05,  // gsr raw 1285
-      0x12, 0x07,  // pulse raw 1810
+      0xF5, 0x48, 0x01, 0x00,  // pulse raw 84213 (u32 since v2)
       0x41, 0x0A,  // temp x100 = 2625
       0x9B, 0x05,  // gsr tonic 1435
       0x3C,        // brightness 60
@@ -129,7 +129,7 @@ static void testVitals() {
   checkNear("vitals tempC", r.tempC, v.tempC, 0.01f);
   checkNear("vitals gsrTonic", r.gsrTonic, v.gsrTonic, 1.0f);
   checkEq("vitals gsrRaw", r.gsrRaw, v.gsrRaw);
-  checkEq("vitals pulseRaw", r.pulseRaw, v.pulseRaw);
+  checkEq("vitals pulseRaw", (long)r.pulseRaw, (long)v.pulseRaw);
   checkEq("vitals brightness", r.brightness, v.brightness);
   checkEq("vitals mode", r.mode, v.mode);
   checkEq("vitals worn", r.worn, 1);
@@ -157,6 +157,15 @@ static void testVitalsEdges() {
   checkNear("bpm saturates", r.bpm, 6553.5f, 0.1f);
   checkNear("perfusion saturates", r.perfusion, 655.35f, 0.1f);
 
+  // The whole reason for protocol v2: an 18-bit IR count must survive intact. At the
+  // v1 u16 width this wrapped to 65535 -> 262143 & 0xFFFF = 65535, a number that looks
+  // like a saturated but believable reading.
+  BleVitals ir;
+  ir.pulseRaw = 262143;   // 2^18 - 1, MAX30102 full scale
+  blePackVitals(buf, ir);
+  bleUnpackVitals(buf, BLE_VITALS_LEN, r);
+  checkEq("18-bit IR full scale survives", (long)r.pulseRaw, 262143);
+
   BleVitals neg;
   neg.bpm = -50.0f;
   blePackVitals(buf, neg);
@@ -180,11 +189,15 @@ static void testVitalsEdges() {
 static void testSignals() {
   printf("signals\n");
 
+  // Magnitudes chosen for the MAX30102 scale, not the old analog one: cardiac AC in
+  // the hundreds-to-thousands of IR counts, on a DC level in the tens of thousands.
+  // A -1234.5 filtered value at x10 scaling is 12345, well past what the v1 i16 field
+  // could carry.
   BleSignalSample s[BLE_SIGNALS_BATCH];
   for (int i = 0; i < BLE_SIGNALS_BATCH; i++) {
-    s[i].pulseFiltered = -3.5f + (float)i;
+    s[i].pulseFiltered = -1234.5f + 500.0f * (float)i;
     s[i].gsrPhasic = 10.0f * (float)i;
-    s[i].pulseRaw = (uint16_t)(1800 + i);
+    s[i].pulseRaw = (uint32_t)(84200 + i);
     s[i].gsrRaw = (uint16_t)(1300 + i);
   }
 
@@ -193,12 +206,15 @@ static void testSignals() {
   checkEq("signals length", (long)n, BLE_SIGNALS_LEN);
 
   // header: version, count 5, timestamp 123456 = 0x0001E240
-  // sample 0: pulse -3.5*10 = -35 = 0xFFDD ; gsr 0 ; raw 1800 = 0x0708 ; 1300 = 0x0514
-  const uint8_t wantHead[10] = {
-      0x01, 0x05,              // version, count
+  // sample 0: pulse -1234.5*10 = -12345 = 0xFFFFCFC7 ; raw 84200 = 0x000148E8 ;
+  //           gsr phasic 0 ; gsr raw 1300 = 0x0514
+  const uint8_t wantHead[18] = {
+      0x02, 0x05,              // version, count
       0x40, 0xE2, 0x01, 0x00,  // timestamp 123456
-      0xDD, 0xFF,              // pulse filtered x10 = -35
+      0xC7, 0xCF, 0xFF, 0xFF,  // pulse filtered x10 = -12345 (i32 since v2)
+      0xE8, 0x48, 0x01, 0x00,  // pulse raw 84200 (u32 since v2)
       0x00, 0x00,              // gsr phasic x10 = 0
+      0x14, 0x05,              // gsr raw 1300
   };
   checkBytes("signals golden header", buf, wantHead, sizeof wantHead);
 
@@ -214,7 +230,7 @@ static void testSignals() {
   for (int i = 0; i < BLE_SIGNALS_BATCH; i++) {
     checkNear("signals pulseFiltered", r[i].pulseFiltered, s[i].pulseFiltered, 0.05f);
     checkNear("signals gsrPhasic", r[i].gsrPhasic, s[i].gsrPhasic, 0.05f);
-    checkEq("signals pulseRaw", r[i].pulseRaw, s[i].pulseRaw);
+    checkEq("signals pulseRaw", (long)r[i].pulseRaw, (long)s[i].pulseRaw);
     checkEq("signals gsrRaw", r[i].gsrRaw, s[i].gsrRaw);
   }
 
@@ -239,7 +255,7 @@ static void testSpectrum() {
   checkEq("spectrum length", (long)n, BLE_SPECTRUM_LEN);
 
   const uint8_t wantHead[8] = {
-      0x01, 0x30,  // version, 48 bins
+      0x02, 0x30,  // version, 48 bins
       0x0A, 0x00,  // peak bin 10, reserved
       0x90, 0x01,  // bpmLo x10 = 400
       0x6C, 0x07,  // bpmHi x10 = 1900
@@ -352,8 +368,8 @@ static void testInvariants() {
   checkEq("spectrum fits one 247-byte MTU", (long)BLE_SPECTRUM_LEN <= 244, 1);
   checkEq("signals fits one 247-byte MTU", (long)BLE_SIGNALS_LEN <= 244, 1);
   checkEq("config read fits one 247-byte MTU", (long)BLE_CONFIG_READ_LEN <= 244, 1);
-  checkEq("vitals length", (long)BLE_VITALS_LEN, 18);
-  checkEq("signals length", (long)BLE_SIGNALS_LEN, 46);
+  checkEq("vitals length", (long)BLE_VITALS_LEN, 20);
+  checkEq("signals length", (long)BLE_SIGNALS_LEN, 66);
   checkEq("spectrum length", (long)BLE_SPECTRUM_LEN, 56);
 }
 

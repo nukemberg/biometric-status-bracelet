@@ -347,7 +347,8 @@
       </div>
       <div class="row-value" id="arousal">--</div>
     </div>
-    <div class="row">
+    <div class="row" title="Cardiac AC as a percent of DC. The bar is scaled so the
+device's live perfusion-trust threshold sits at half full.">
       <div class="row-label">Perfusion</div>
       <div class="row-track" style="--row-colour: var(--pulse-amber)">
         <i id="perfBar"></i>
@@ -360,6 +361,13 @@
         <i id="tempBar"></i>
       </div>
       <div class="row-value" id="temp">--</div>
+    </div>
+    <div class="row" title="MAX30102 IR DC level, 18-bit (full scale 262143). Both
+failure modes look identical downstream, so the state is named rather than left to be
+inferred from the number.">
+      <div class="row-label">IR raw</div>
+      <div class="row-track"><i id="irBar"></i></div>
+      <div class="row-value" id="ir">--</div>
     </div>
     <div class="row">
       <div class="row-label">GSR raw</div>
@@ -447,7 +455,7 @@
 "use strict";
 
 // --- protocol (mirrors libraries/BraceletProtocol/src/ble_protocol.h) --------
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const SVC      = "a1b20001-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_VITALS  = "a1b20002-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_SIGNALS = "a1b20003-5e8f-4d7a-9c31-0f2e6d4b8a70";
@@ -456,7 +464,7 @@ const CHR_CONTROL = "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_CONFIG  = "a1b20006-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_INFO    = "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70";
 
-const VITALS_LEN = 18;
+const VITALS_LEN = 20;
 const CMD_SET_MODE = 0x01, CMD_SET_BRIGHTNESS = 0x02, CMD_RECALIBRATE_GSR = 0x03;
 const CMD_SET_STREAMS = 0x04, CMD_RESET_CONFIG = 0x06;
 const STREAM_SIGNALS = 0x01, STREAM_SPECTRUM = 0x02;
@@ -485,7 +493,12 @@ const CONFIG_META = {
   hue_bpm_hi:   {min: 30,  max: 200,  step: 1,   label: "Hue BPM high"},
   hue_at_lo:    {min: -90, max: 270,  step: 1,   label: "Hue @ low"},
   hue_at_hi:    {min: -90, max: 270,  step: 1,   label: "Hue @ high"},
-  pi_trust_min: {min: 0,   max: 5,    step: 0.01, label: "Perfusion trust"},
+  // Raised from max 5 for the MAX30102. The old ceiling covered the analog sensor's
+  // range (perfusion 0.15-0.68 across every capture); the MAX30102 reads on a
+  // different scale entirely and this slider is the tool DESIGN.md 4.2 step 3 uses to
+  // set the threshold, so it must reach past whatever good contact turns out to
+  // produce. Device bound is 0-100 (config_store FIELDS), so 20 stays well inside it.
+  pi_trust_min: {min: 0,   max: 20,   step: 0.05, label: "Perfusion trust"},
   gsr_worn_min: {min: 0,   max: 4095, step: 5,   label: "GSR worn min"},
   gsr_worn_max: {min: 0,   max: 4095, step: 5,   label: "GSR worn max"},
   conf_gate:    {min: 0,   max: 1,    step: 0.01, label: "Conf gate"},
@@ -504,8 +517,15 @@ function decodeVitals(dv) {
   if (dv.byteLength < VITALS_LEN) throw new Error(`short packet (${dv.byteLength}B)`);
   const version = dv.getUint8(0);
   if (version !== PROTOCOL_VERSION) {
+    // v1 is the analog-PPG firmware. Its Vitals packet is 18 bytes with pulse_raw as
+    // a u16, so decoding it here would land temperature and tonic at the wrong
+    // offsets and produce a full readout of plausible wrong numbers. Refuse, and say
+    // which side is stale rather than just that they disagree.
+    const hint = version < PROTOCOL_VERSION
+      ? "the bracelet needs reflashing"
+      : "this page is out of date — hard-refresh it";
     throw new Error(`bracelet speaks protocol v${version}, this page speaks ` +
-                    `v${PROTOCOL_VERSION}`);
+                    `v${PROTOCOL_VERSION} — ${hint}`);
   }
   const flags = dv.getUint8(1);
   return {
@@ -514,10 +534,11 @@ function decodeVitals(dv) {
     arousal:    dv.getUint8(5) / 255,
     perfusion:  dv.getUint16(6, true) / 100,
     gsrRaw:     dv.getUint16(8, true),
-    pulseRaw:   dv.getUint16(10, true),
-    tempC:      dv.getInt16(12, true) / 100,
-    gsrTonic:   dv.getUint16(14, true),
-    brightness: dv.getUint8(16),
+    // u32 since protocol v2: the MAX30102 IR channel is an 18-bit count.
+    pulseRaw:   dv.getUint32(10, true),
+    tempC:      dv.getInt16(14, true) / 100,
+    gsrTonic:   dv.getUint16(16, true),
+    brightness: dv.getUint8(18),
     mode:       (flags & 0x18) >> 3,
     worn:         !!(flags & 0x01),
     pulseTrusted: !!(flags & 0x02),
@@ -558,17 +579,19 @@ function decodeSignals(dv) {
     throw new Error(`signals: protocol v${dv.getUint8(0)}`);
   const count = dv.getUint8(1);
   if (count > 5) throw new Error(`signals: count ${count} > 5`);
-  if (dv.byteLength < 6 + count * 8)
+  if (dv.byteLength < 6 + count * 12)
     throw new Error(`signals: ${dv.byteLength}B for ${count} samples`);
   const ts = dv.getUint32(2, true);
   const samples = [];
   for (let i = 0; i < count; i++) {
-    const o = 6 + i * 8;
+    // 12-byte sample since protocol v2: both pulse fields widened to 32 bits for the
+    // MAX30102's 18-bit IR channel.
+    const o = 6 + i * 12;
     samples.push({
-      pulseFiltered: dv.getInt16(o, true) / 10,
-      gsrPhasic: dv.getInt16(o + 2, true) / 10,
-      pulseRaw: dv.getUint16(o + 4, true),
-      gsrRaw: dv.getUint16(o + 6, true),
+      pulseFiltered: dv.getInt32(o, true) / 10,
+      pulseRaw: dv.getUint32(o + 4, true),
+      gsrPhasic: dv.getInt16(o + 8, true) / 10,
+      gsrRaw: dv.getUint16(o + 10, true),
     });
   }
   return { ts, samples };
@@ -710,6 +733,51 @@ function pulseTrust(confidence) {
   return Math.min(1, confidence / ref);
 }
 
+// MAX30102 IR DC bands, from DESIGN.md 4.2. Named rather than left to be read off a
+// bare number, because the two failure modes are indistinguishable downstream: a
+// starved LED and a saturated ADC both present as "flat signal, no rate". Watching
+// this while adjusting strap tension is the whole point of putting it on screen.
+const IR_FULL_SCALE = 262143;   // 2^18 - 1
+const IR_OFF_SKIN   = 5000;
+const IR_WEAK       = 20000;
+const IR_CLIPPING   = 240000;
+
+function irState(ir) {
+  if (ir < IR_OFF_SKIN) return {word: "off skin", colour: "--ink-dim"};
+  if (ir < IR_WEAK)     return {word: "weak", colour: "--untrusted"};
+  if (ir < IR_CLIPPING) return {word: "good", colour: "--pulse-amber"};
+  return {word: "CLIPPING", colour: "--pulse-red"};
+}
+
+// Abbreviated because the full count ("250,000 · CLIPPING") starved the bar down to
+// ~50 px on a 360 px phone -- the row would have been carrying a number that is
+// already in the serial log and a bar too short to steer by. 1 k resolution is ample
+// for the job this row does: judging position inside a 20 k-240 k window while you
+// adjust strap tension. Exact counts live in the capture CSV.
+function formatIr(ir) {
+  if (ir < 1000) return String(ir);
+  if (ir < 10000) return `${(ir / 1000).toFixed(1)}k`;
+  return `${Math.round(ir / 1000)}k`;
+}
+
+// Piecewise, not linear against full scale. Linear crushes the whole off-skin ->
+// good transition into the bottom third of the track, and that transition is the
+// thing you are actually steering while you tighten the strap -- a bar that barely
+// moves through the range you are adjusting is useless for the one job it has.
+//
+// Each band instead gets a fixed share of the track, so movement inside a band is
+// visible and the boundaries sit at learnable positions: 25 % = on skin at all,
+// 50 % = out of the weak zone, 90 % = about to clip.
+function irBarPercent(ir) {
+  const seg = (v, lo, hi, from, to) => from + ((v - lo) / (hi - lo)) * (to - from);
+  let pct;
+  if (ir < IR_OFF_SKIN)      pct = seg(ir, 0, IR_OFF_SKIN, 0, 25);
+  else if (ir < IR_WEAK)     pct = seg(ir, IR_OFF_SKIN, IR_WEAK, 25, 50);
+  else if (ir < IR_CLIPPING) pct = seg(ir, IR_WEAK, IR_CLIPPING, 50, 90);
+  else                       pct = seg(ir, IR_CLIPPING, IR_FULL_SCALE, 90, 100);
+  return Math.max(0, Math.min(100, pct));
+}
+
 function render(v) {
   vitals = v;
 
@@ -736,12 +804,27 @@ function render(v) {
   $("arousal").textContent = `${(v.arousal * 100).toFixed(0)}%`;
   $("arousalBar").style.width = `${v.arousal * 100}%`;
 
+  // Scaled so the device's LIVE perfusion-trust threshold sits at half full, rather
+  // than against a fixed full scale. The old hardcoded /2 was the analog sensor's
+  // useful range; the MAX30102 reads on a completely different scale and no honest
+  // constant exists for it until the calibration in DESIGN.md 4.2 is done. Tying the
+  // bar to pi_trust_min keeps it meaningful on either sensor and self-corrects the
+  // moment the threshold is retuned -- and "half full = exactly believable" is a more
+  // useful thing to read at a glance than a percentage of an arbitrary ceiling.
+  const piRef = deviceConfig.pi_trust_min > 0 ? deviceConfig.pi_trust_min : 0.4;
   $("perf").textContent = `${v.perfusion.toFixed(2)}%`;
-  $("perfBar").style.width = `${Math.min(100, (v.perfusion / 2) * 100)}%`;
+  $("perfBar").style.width =
+    `${Math.max(0, Math.min(100, (v.perfusion / (2 * piRef)) * 100))}%`;
 
   $("temp").textContent = `${v.tempC.toFixed(1)} C`;
   $("tempBar").style.width =
     `${Math.max(0, Math.min(100, ((v.tempC - 25) / 9) * 100))}%`;
+
+  const ir = irState(v.pulseRaw);
+  $("ir").textContent = `${formatIr(v.pulseRaw)} · ${ir.word}`;
+  const irTrack = $("irBar").parentElement;
+  irTrack.style.setProperty("--row-colour", css(ir.colour));
+  $("irBar").style.width = `${irBarPercent(v.pulseRaw)}%`;
 
   $("gsr").textContent = v.gsrRaw;
 

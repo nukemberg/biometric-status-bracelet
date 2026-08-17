@@ -12,7 +12,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 SVC_BRACELET = "a1b20001-5e8f-4d7a-9c31-0f2e6d4b8a70"
 CHR_VITALS = "a1b20002-5e8f-4d7a-9c31-0f2e6d4b8a70"
@@ -22,9 +22,9 @@ CHR_CONTROL = "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70"
 CHR_CONFIG = "a1b20006-5e8f-4d7a-9c31-0f2e6d4b8a70"
 CHR_INFO = "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70"
 
-VITALS_LEN = 18
+VITALS_LEN = 20
 SIGNALS_BATCH = 5
-SIGNALS_LEN = 6 + SIGNALS_BATCH * 8
+SIGNALS_LEN = 6 + SIGNALS_BATCH * 12
 SPECTRUM_BINS = 48
 SPECTRUM_LEN = 8 + SPECTRUM_BINS
 
@@ -105,7 +105,7 @@ class Vitals:
         return (
             f"bpm {self.bpm:6.1f}  conf {self.confidence:.2f}  "
             f"arousal {self.arousal:.2f}  perf {self.perfusion:5.2f}%  "
-            f"gsr {self.gsr_raw:4d}  pulse {self.pulse_raw:4d}  "
+            f"gsr {self.gsr_raw:4d}  ir {self.pulse_raw:6d}  "
             f"{self.temp_c:5.1f}C  mode {self.mode}  [{' '.join(flags)}]"
         )
 
@@ -115,8 +115,9 @@ def decode_vitals(data: bytes) -> Vitals:
     if len(data) < VITALS_LEN:
         raise ProtocolError(f"vitals: {len(data)} bytes, expected {VITALS_LEN}")
     flags = data[1]
+    # pulse_raw is u32 since protocol v2 -- MAX30102 IR is an 18-bit count.
     bpm, conf, arousal, perf, gsr, pulse, temp, tonic, bright = struct.unpack_from(
-        "<HBBHHHhHB", data, 2
+        "<HBBHHIhHB", data, 2
     )
     return Vitals(
         bpm=bpm / 10.0,
@@ -139,7 +140,7 @@ def decode_vitals(data: bytes) -> Vitals:
 class SignalSample:
     pulse_filtered: float
     gsr_phasic: float
-    pulse_raw: int
+    pulse_raw: int   # MAX30102 IR, 18-bit counts
     gsr_raw: int
 
 
@@ -151,12 +152,13 @@ def decode_signals(data: bytes) -> tuple[int, list[SignalSample]]:
     count = data[1]
     if count > SIGNALS_BATCH:
         raise ProtocolError(f"signals: claims {count} samples, max {SIGNALS_BATCH}")
-    if len(data) < 6 + count * 8:
+    if len(data) < 6 + count * 12:
         raise ProtocolError(f"signals: {len(data)} bytes for {count} samples")
     (ts,) = struct.unpack_from("<I", data, 2)
     out = []
     for i in range(count):
-        pf, gp, pr, gr = struct.unpack_from("<hhHH", data, 6 + i * 8)
+        # v2 sample: i32 filtered x10, u32 raw IR, i16 gsr phasic x10, u16 gsr raw.
+        pf, pr, gp, gr = struct.unpack_from("<iIhH", data, 6 + i * 12)
         out.append(SignalSample(pf / 10.0, gp / 10.0, pr, gr))
     return ts, out
 
@@ -243,8 +245,19 @@ def decode_config_read(data: bytes) -> dict[str, float]:
 # these must change with them -- that is the point.
 # ---------------------------------------------------------------------------
 FIXTURE_VITALS = bytes(
-    [0x01, 0x13, 0x83, 0x02, 0x40, 0x80, 0xA0, 0x00, 0x05, 0x05,
-     0x12, 0x07, 0x41, 0x0A, 0x9B, 0x05, 0x3C, 0x00]
+    [0x02, 0x13, 0x83, 0x02, 0x40, 0x80, 0xA0, 0x00, 0x05, 0x05,
+     0xF5, 0x48, 0x01, 0x00, 0x41, 0x0A, 0x9B, 0x05, 0x3C, 0x00]
+)
+# Sample 0 of the signals fixture in ble_packet_test.cpp::testSignals, byte for byte,
+# wrapped in a count=1 header so it decodes standalone. The C++ fixture packs five;
+# they all have the same 12-byte shape, and one is enough to pin the field offsets,
+# which is the thing that actually drifts.
+FIXTURE_SIGNALS = bytes(
+    [0x02, 0x01, 0x40, 0xE2, 0x01, 0x00,
+     0xC7, 0xCF, 0xFF, 0xFF,   # pulse_filtered x10 = -12345
+     0xE8, 0x48, 0x01, 0x00,   # pulse_raw 84200
+     0x00, 0x00,               # gsr_phasic x10 = 0
+     0x14, 0x05]               # gsr_raw 1300
 )
 FIXTURE_CONFIG_WRITE = bytes([0x05, 0xCD, 0xCC, 0xCC, 0x3E])
 # Matches blePackConfigRead in tools/ble_packet_test.cpp::testConfigRead. Values
@@ -283,7 +296,7 @@ def selftest() -> int:
     check("arousal", v.arousal, 0.5, 0.01)
     check("perfusion", v.perfusion, 1.60, 0.01)
     check("gsr_raw", v.gsr_raw, 1285)
-    check("pulse_raw", v.pulse_raw, 1810)
+    check("pulse_raw", v.pulse_raw, 84213)
     check("temp_c", v.temp_c, 26.25, 0.01)
     check("gsr_tonic", v.gsr_tonic, 1435.0, 1.0)
     check("brightness", v.brightness, 60)
@@ -291,6 +304,16 @@ def selftest() -> int:
     check("worn", v.worn, True)
     check("pulse_trusted", v.pulse_trusted, True)
     check("strobe", v.strobe, False)
+
+    # Signals: the widened pulse fields are the whole point of v2, so the fixture
+    # carries values that would not have survived the v1 i16/u16 widths.
+    ts, batch = decode_signals(FIXTURE_SIGNALS)
+    check("signals timestamp", ts, 123456)
+    check("signals sample count", len(batch), 1)
+    check("signals pulse_filtered", batch[0].pulse_filtered, -1234.5, 0.05)
+    check("signals pulse_raw", batch[0].pulse_raw, 84200)
+    check("signals gsr_phasic", batch[0].gsr_phasic, 0.0, 0.05)
+    check("signals gsr_raw", batch[0].gsr_raw, 1300)
 
     check("config write encoding", encode_config_write("pi_trust_min", 0.40),
           FIXTURE_CONFIG_WRITE)

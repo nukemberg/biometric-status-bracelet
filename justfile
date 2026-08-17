@@ -74,12 +74,16 @@ test-ble:
 test-proto:
     uv run tools/blectl.py selftest
 
-# DSP C++ vs Python parity (needs a sample file)
-test-parity SAMPLE="samples/bio2.log":
+# DSP C++ vs Python parity (defaults to the synthetic fixture)
+test-parity SAMPLE="samples/synthetic.csv":
     tools/dsp_v2_parity.sh {{SAMPLE}}
 
+# Regenerate the deterministic synthetic capture used by test-parity
+synth OUT="samples/synthetic.csv" *FLAGS="":
+    uv run tools/make_synthetic_capture.py {{FLAGS}} > {{OUT}}
+
 # Run all automated tests
-test: test-ble test-proto
+test: test-ble test-proto test-parity
     echo "all automated tests passed"
 
 

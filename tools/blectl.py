@@ -194,8 +194,8 @@ async def cmd_stream(args) -> int:
             samples += 1
             t = ts + i * 40
             if not args.quiet:
-                print(f"{t:9d}  pulse {smp.pulse_filtered:8.1f}  "
-                      f"gsr {smp.gsr_phasic:8.1f}  raw {smp.pulse_raw:5d} "
+                print(f"{t:9d}  pulse {smp.pulse_filtered:9.1f}  "
+                      f"gsr {smp.gsr_phasic:8.1f}  ir {smp.pulse_raw:7d} "
                       f"{smp.gsr_raw:5d}", flush=True)
             if csv:
                 csv.write(f"{t},{smp.pulse_filtered:.1f},{smp.gsr_phasic:.1f},"

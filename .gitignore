@@ -15,3 +15,12 @@ build/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Serial capture scratch files (just monitor-save / deploy / poke)
+deploy*.log
+poke*.log
+probe*.log
+session.log
+
+# Playwright MCP scratch
+.playwright-mcp/
