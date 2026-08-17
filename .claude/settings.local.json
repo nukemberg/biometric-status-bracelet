@@ -9,7 +9,28 @@
       "Bash(python3 -c ' *)",
       "Bash(node --check /private/tmp/claude-501/-Users-avishai-code-biometric-status-bracelet/617cef21-ad00-40e2-bef2-f48f8c898382/scratchpad/app.mjs)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(just test-ble *)",
+      "Bash(just test-proto *)",
+      "Bash(just lint-web *)",
+      "Bash(uv run *)",
+      "Bash(tools/dsp_v2_parity.sh samples/synthetic.csv)",
+      "Bash(tools/dsp_v2_parity.sh /tmp/syn180.csv)",
+      "Bash(/tmp/par /tmp/syn180.csv)",
+      "Bash(just build *)",
+      "Bash(arduino-cli compile *)",
+      "Read(//dev/**)",
+      "Bash(arduino-cli board *)",
+      "Bash(just upload *)",
+      "Bash(just monitor-save *)",
+      "mcp__plugin_playwright_playwright__browser_resize",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_console_messages",
+      "mcp__plugin_playwright_playwright__browser_evaluate",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "Bash(just test *)",
+      "Bash(pkill -f \"http.server 8731\")",
+      "Bash(git check-ignore *)"
     ]
   }
 }
