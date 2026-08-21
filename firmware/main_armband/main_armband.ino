@@ -51,12 +51,15 @@
 // capture in samples/ was taken on. GSR is the only analog sensor left and must stay
 // on ADC1 -- ADC2 is unusable on both chips while the radio is active.
 //
-// PIN_PPG_INT is wired but not read. The MAX30102's PPG_RDY interrupt is enabled in
-// the driver so the line carries a usable signal, but the DSP task polls the FIFO
-// pointers at its 25 Hz decimation boundary instead, which costs one 3-byte I2C read
-// per 40 ms and needs no ISR. The pin is claimed here so a future FIFO-driven path
-// does not have to re-route the harness.
-//#define MCU_ESP32_S3
+// PIN_PPG_INT is now wired and monitored, but only as a diagnostic -- the DSP task
+// still polls the FIFO pointers at its 25 Hz decimation boundary rather than draining
+// on the interrupt, since that read is I2C and cannot happen inside the ISR. The ISR
+// just counts PPG_RDY edges (ppgIntCount) so the measured edge rate can be compared
+// against ppgHz (which comes from the FIFO's own sample count) as a second, independent
+// check on the MAX30102's oscillator. A real interrupt-driven drain -- ISR sets a flag,
+// task drains only when set -- is still future work; polling every tick already costs
+// only one 3-byte I2C read per 40 ms, so there is little to gain there.
+#define MCU_ESP32_S3
 
 #ifdef MCU_ESP32_S3
   #define PIN_GSR         1     // ADC1_CH0
@@ -64,7 +67,7 @@
   #define PIN_SCL         9
   #define PIN_PPG_INT     10
   #define PIN_BUTTON      5
-  #define PIN_LED         4
+  #define PIN_LED         6     // moved off GPIO4 -- that pin measured damaged
 #else // Standard ESP32 DevKit WROOM-32
   #define PIN_GSR         34
   #define PIN_SDA         21
@@ -160,6 +163,14 @@ WearDetect wear;
 // reads 25.6 then every BPM the device reports is 2.4 % low with nothing else looking
 // wrong. Measuring it is the only way that error is ever visible. See DESIGN.md 4.2.
 volatile float ppgHz = 0.0f;
+
+// PPG_RDY edge count from PIN_PPG_INT, single-writer (ISR) / single-reader (main loop
+// stat report) on a 32-bit word -- no lock needed, same pattern as ppgHz above.
+volatile uint32_t ppgIntCount = 0;
+
+void IRAM_ATTR onPpgInt() {
+  ppgIntCount++;
+}
 
 // Measured on core 0, where a NimBLE controller task will later compete for time.
 // Reported every 10 s and then reset, so each line describes a fresh window.
@@ -364,10 +375,7 @@ void TaskSensorDSP(void *pvParameters) {
           Serial.print(F(" = "));
           Serial.println(val, 4);
         } else {
-          Serial.print(F("[Config] rejected param 0x"));
-          Serial.print(id, HEX);
-          Serial.print(F(" = "));
-          Serial.println(val, 4);
+          BleService::log("[Config] rejected param 0x%02X = %.4f", id, val);
         }
       }
       // Debounced persist: apply live on every write, but only hit flash once writes
@@ -631,6 +639,41 @@ void renderBiometricPanel() {
 }
 
 // ============================================================================
+// BOOT SELF-TEST
+// ============================================================================
+// All LEDs blue for 0.5s (strip/wiring sanity -- every pixel should visibly light),
+// then 2s of per-segment red/green sensor status: segment 1 = GSR, segment 2 = pulse
+// (MAX30102), segment 3 = temp (BME280). GSR has no self-ID like an I2C device, so
+// "pass" there just means the raw ADC reading is off both rails (not pinned at 0 or
+// 4095, i.e. wired to something rather than floating open or shorted) -- the same
+// check used in firmware/led_test.
+void bootSelfTest() {
+  FastLED.showColor(CRGB(0, 0, 255));
+  delay(500);
+
+  uint16_t gsrRaw = analogRead(PIN_GSR);
+  bool gsrOk = gsrRaw > 5 && gsrRaw < 4090;
+
+  CRGB gsrColor = gsrOk ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
+  CRGB pulseColor = ppgConnected ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
+  CRGB tempColor = bmeConnected ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
+
+  for (int i = 0; i < 7; i++)  leds[i] = gsrColor;
+  for (int i = 7; i < 14; i++) leds[i] = pulseColor;
+  for (int i = 14; i < 21; i++) leds[i] = tempColor;
+  FastLED.show();
+
+  BleService::log("[boot] self-test | GSR raw=%u %s | Pulse %s | Temp %s",
+                  gsrRaw, gsrOk ? "OK" : "FAIL",
+                  ppgConnected ? "OK" : "FAIL",
+                  bmeConnected ? "OK" : "FAIL");
+
+  delay(2000);
+  FastLED.clear();
+  FastLED.show();
+}
+
+// ============================================================================
 // MAIN SETUP & LOOP
 // ============================================================================
 void setup() {
@@ -669,8 +712,19 @@ void setup() {
   }
 
   ppgConnected = ppg.begin(Wire);
-  Serial.println(ppgConnected ? F("[boot] MAX30102 ready (IR, 25 Hz FIFO)")
-                              : F("[boot] MAX30102 NOT FOUND -- pulse will not track"));
+  if (ppgConnected) {
+    Serial.println(F("[boot] MAX30102 ready (IR, 25 Hz FIFO)"));
+  } else {
+    BleService::log("[boot] MAX30102 NOT FOUND -- pulse will not track");
+  }
+
+  if (ppgConnected) {
+    // MAX30102's INT is open-drain, active-low, and the breakout's own pull-up
+    // rail feeds it (same rail as SDA/SCL -- see DESIGN.md 1), so plain INPUT here,
+    // not INPUT_PULLUP, to avoid fighting that external pull-up.
+    pinMode(PIN_PPG_INT, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_PPG_INT), onPpgInt, FALLING);
+  }
 
   // Started after the DSP task so the jitter monitor has a clean window before the
   // radio exists; -a75 compares the two.
@@ -696,12 +750,16 @@ void setup() {
   FastLED.setBrightness(bio.brightness);
   FastLED.clear();
   FastLED.show();
+
+  bootSelfTest();
+
   Serial.println(F("[boot] boot complete"));
 }
 
 unsigned long lastSerialPrint = 0;
 unsigned long lastFrameMs = 0;
 unsigned long lastJitterPrint = 0;
+uint32_t lastPpgIntCount = 0;
 unsigned long lastVitalsPublish = 0;
 unsigned long lastSignalsPublish = 0;
 unsigned long lastSpectrumPublish = 0;
@@ -875,6 +933,16 @@ void loop() {
       Serial.print(F(" Hz (dsp assumes "));
       Serial.print(DSP_HZ);
       Serial.println(F(")"));
+      // Independent cross-check on the same oscillator: PPG_RDY edges counted on
+      // PIN_PPG_INT over this window, converted to Hz. Should track ppgHz above --
+      // a persistent mismatch means the FIFO-pointer math and the interrupt line
+      // disagree, which points at the ISR/wiring rather than the oscillator itself.
+      uint32_t intCount = ppgIntCount;  // volatile, single read
+      uint32_t intDelta = intCount - lastPpgIntCount;
+      lastPpgIntCount = intCount;
+      Serial.print(F("[PPG] int  "));
+      Serial.print(intDelta / 10.0f, 2);
+      Serial.println(F(" Hz (PPG_RDY edges on PIN_PPG_INT)"));
     } else {
       Serial.println(F("[PPG] MAX30102 absent -- BPM is frozen at its last value"));
     }

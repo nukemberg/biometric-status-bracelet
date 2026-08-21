@@ -1,5 +1,7 @@
 #include "ble_service.h"
 
+#include <stdarg.h>
+
 #if ENABLE_BLE
 
 #include <Arduino.h>
@@ -16,9 +18,33 @@ NimBLECharacteristic *controlChr = nullptr;
 NimBLECharacteristic *signalsChr = nullptr;
 NimBLECharacteristic *spectrumChr = nullptr;
 NimBLECharacteristic *configChr = nullptr;
+NimBLECharacteristic *logChr = nullptr;
 bool connected = false;
 uint8_t streams = 0;
 BleService::Handlers handlers;
+
+// Ring buffer for BleService::log(). Overwrites oldest on wrap, same policy as the
+// signals ring buffer in main_armband.ino: a debug aid that falls behind must show
+// the most recent history, not the oldest.
+struct LogEntry {
+  uint32_t ms = 0;
+  char text[64] = {0};
+};
+LogEntry logRing[BLE_LOG_DEPTH];
+uint8_t logHead = 0;    // next slot to write
+uint8_t logCount = 0;   // valid entries, saturates at BLE_LOG_DEPTH
+
+// Single-entry notify payload: plain ASCII "<seconds>s <message>", no header. Debug
+// aid, not the scientific data path -- see the comment on BLE_LOG_DEPTH.
+void notifyLogEntry(const LogEntry &e) {
+  if (!logChr || !connected) return;
+  char buf[80];
+  int n = snprintf(buf, sizeof buf, "%lus %s", e.ms / 1000UL, e.text);
+  if (n < 0) return;
+  if ((size_t)n >= sizeof buf) n = sizeof buf - 1;
+  logChr->setValue((uint8_t *)buf, (size_t)n);
+  logChr->notify();
+}
 
 // Human-readable on purpose. This is the first thing anyone reads when debugging with
 // nRF Connect, and a packed binary blob would need a decoder to answer "what is this
@@ -84,6 +110,17 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
       case CMD_RESET_CONFIG:
         if (handlers.resetConfig) handlers.resetConfig();
         break;
+
+      case CMD_DUMP_LOG: {
+        // Oldest first, so the client's log view fills in chronological order
+        // rather than needing to re-sort a batch of out-of-order notifications.
+        uint8_t start = (logCount < BLE_LOG_DEPTH) ? 0
+                        : logHead;  // buffer has wrapped; logHead is the oldest slot
+        for (uint8_t i = 0; i < logCount; i++) {
+          notifyLogEntry(logRing[(start + i) % BLE_LOG_DEPTH]);
+        }
+        break;
+      }
 
       default:
         Serial.print(F("[BLE] unknown command 0x"));
@@ -194,6 +231,8 @@ void begin(const char *deviceName, const Handlers &h) {
   infoChr = svc->createCharacteristic(BLE_CHR_INFO, NIMBLE_PROPERTY::READ);
   infoChr->setValue(buildInfoString().c_str());
 
+  logChr = svc->createCharacteristic(BLE_CHR_LOG, NIMBLE_PROPERTY::NOTIFY);
+
   svc->start();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
@@ -244,6 +283,24 @@ uint8_t streamMask() { return streams; }
 
 bool isConnected() { return connected; }
 
+void log(const char *fmt, ...) {
+  char text[sizeof(LogEntry::text)];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(text, sizeof text, fmt, args);
+  va_end(args);
+
+  Serial.println(text);
+
+  LogEntry &e = logRing[logHead];
+  e.ms = millis();
+  memcpy(e.text, text, sizeof text);
+  logHead = (uint8_t)((logHead + 1) % BLE_LOG_DEPTH);
+  if (logCount < BLE_LOG_DEPTH) logCount++;
+
+  notifyLogEntry(e);
+}
+
 }  // namespace BleService
 
 #else  // ENABLE_BLE
@@ -255,6 +312,15 @@ bool publishSignals(uint32_t, const BleSignalSample *, uint8_t) { return false; 
 void publishSpectrum(const float *, uint8_t, uint8_t, float, float) {}
 uint8_t streamMask() { return 0; }
 bool isConnected() { return false; }
+
+void log(const char *fmt, ...) {
+  char text[64];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(text, sizeof text, fmt, args);
+  va_end(args);
+  Serial.println(text);
+}
 }  // namespace BleService
 
 #endif

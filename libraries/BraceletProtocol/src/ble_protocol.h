@@ -45,6 +45,7 @@
 #define BLE_CHR_CONTROL    "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70"
 #define BLE_CHR_CONFIG     "a1b20006-5e8f-4d7a-9c31-0f2e6d4b8a70"
 #define BLE_CHR_INFO       "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70"
+#define BLE_CHR_LOG        "a1b20008-5e8f-4d7a-9c31-0f2e6d4b8a70"
 
 // ---------------------------------------------------------------------------
 // Packet sizes
@@ -78,7 +79,14 @@ enum BleCommand : uint8_t {
   CMD_SET_STREAMS    = 0x04,   // arg: bitmask below
   CMD_RESET_BANK     = 0x05,   // no arg
   CMD_RESET_CONFIG   = 0x06,   // no arg -- restore compiled defaults
+  CMD_DUMP_LOG       = 0x07,   // no arg -- replay the log ring buffer over BLE_CHR_LOG
 };
+
+// Log ring buffer depth. Each entry is replayed as one plain-ASCII NOTIFY payload on
+// BLE_CHR_LOG -- "<seconds since boot>s <message>" -- rather than a binary record: this
+// is a debug aid, not part of the scientific data path, so it shares the Info
+// characteristic's human-readable-on-purpose philosophy instead of a versioned layout.
+#define BLE_LOG_DEPTH      20
 
 // Stream enable bitmask for CMD_SET_STREAMS. Vitals is always on.
 #define STREAM_SIGNALS     0x01

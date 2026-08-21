@@ -409,6 +409,11 @@ inferred from the number.">
     </div>
   </details>
 
+  <details class="tuning" id="logPanel" hidden>
+    <summary>Device log (<span id="logCount">0</span>)</summary>
+    <div id="logBody" style="font-family:var(--mono); font-size:0.8rem; line-height:1.5; max-height:14rem; overflow-y:auto; white-space:pre-wrap"></div>
+  </details>
+
   <section class="controls">
     <div class="control">
       <span class="eyebrow">Display</span>
@@ -463,10 +468,12 @@ const CHR_SPECTRUM= "a1b20004-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_CONTROL = "a1b20005-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_CONFIG  = "a1b20006-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const CHR_INFO    = "a1b20007-5e8f-4d7a-9c31-0f2e6d4b8a70";
+const CHR_LOG     = "a1b20008-5e8f-4d7a-9c31-0f2e6d4b8a70";
 
 const VITALS_LEN = 20;
 const CMD_SET_MODE = 0x01, CMD_SET_BRIGHTNESS = 0x02, CMD_RECALIBRATE_GSR = 0x03;
-const CMD_SET_STREAMS = 0x04, CMD_RESET_CONFIG = 0x06;
+const CMD_SET_STREAMS = 0x04, CMD_RESET_CONFIG = 0x06, CMD_DUMP_LOG = 0x07;
+const LOG_DEPTH = 20;  // mirrors BLE_LOG_DEPTH in ble_protocol.h
 const STREAM_SIGNALS = 0x01, STREAM_SPECTRUM = 0x02;
 
 // Config parameter ids, mirroring BleConfigParam in ble_protocol.h. The config UI
@@ -1057,6 +1064,22 @@ async function loadConfig() {
   }
 }
 
+// --- device log ---------------------------------------------------------------
+// Notify-only, plain-ASCII "<seconds>s <message>" lines (see BLE_CHR_LOG). History
+// replays on connect via CMD_DUMP_LOG; new entries then arrive live the same way, so
+// this list is simply capped at LOG_DEPTH and treated as append-only either way.
+let logChr = null;
+const logLines = [];
+
+function pushLogLine(text) {
+  logLines.push(text);
+  if (logLines.length > LOG_DEPTH) logLines.shift();
+  $("logBody").textContent = logLines.join("\n");
+  $("logBody").scrollTop = $("logBody").scrollHeight;
+  $("logCount").textContent = String(logLines.length);
+  $("logPanel").hidden = false;
+}
+
 // --- connection -------------------------------------------------------------
 let controlChr = null;
 
@@ -1105,6 +1128,11 @@ async function connect() {
       deviceConfig = {};
       signalsChr = null;
       spectrumChr = null;
+      logChr = null;
+      logLines.length = 0;
+      $("logBody").textContent = "";
+      $("logCount").textContent = "0";
+      $("logPanel").hidden = true;
       streams = 0;
       sigBuf.length = 0;
       lastSpectrum = null;
@@ -1154,6 +1182,15 @@ async function connect() {
       try { lastSpectrum = decodeSpectrum(ev.target.value); drawSpectrum(); }
       catch (err) { $("verdict").innerHTML = `<strong>${err.message}</strong>`; }
     });
+
+    try {
+      logChr = await svc.getCharacteristic(CHR_LOG);
+      logChr.addEventListener("characteristicvaluechanged", ev => {
+        pushLogLine(new TextDecoder().decode(ev.target.value));
+      });
+      await logChr.startNotifications();
+      await send(CMD_DUMP_LOG);   // replay ring-buffer history now that we're subscribed
+    } catch { /* Log is a debug aid; a missing characteristic must not block the link. */ }
 
     const vitalsChr = await svc.getCharacteristic(CHR_VITALS);
     vitalsChr.addEventListener("characteristicvaluechanged", ev => {

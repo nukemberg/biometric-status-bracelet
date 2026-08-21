@@ -169,6 +169,12 @@ struct Max30102 {
     if (!ok || maxSamples == 0) return 0;
     if (maxSamples > MAX30102_DRAIN_MAX) maxSamples = MAX30102_DRAIN_MAX;
 
+    // PPG_RDY clears only by reading Interrupt Status 1 (0x00) -- reading FIFO_DATA
+    // clears A_FULL, not PPG_RDY. Without this the INT pin latches low on the first
+    // sample and never releases; confirmed on-device (GPIO10 stuck low, 0 transitions
+    // over 10s, even while this function was draining the FIFO every cycle).
+    readReg(MAX30102_REG_INT_STATUS_1);
+
     // One burst read of WR_PTR / OVF_COUNTER / RD_PTR. Verified on-device against
     // three separate single-register reads: the burst and the individual reads agree
     // exactly, so the repeated-start path here is sound.

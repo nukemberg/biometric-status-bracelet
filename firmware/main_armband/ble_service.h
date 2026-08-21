@@ -68,4 +68,12 @@ void publishVitals(const BleVitals &v);
 
 bool isConnected();
 
+// Error/warning log, ring-buffered (BLE_LOG_DEPTH entries) and mirrored to Serial.
+// Callers pass printf-style format + args, same as Serial.printf. Always safe to call,
+// BLE enabled or not, connected or not -- Serial output happens either way, and the
+// ring buffer plus notify only engage when the radio is actually up. A connected
+// client replays the buffered history by writing CMD_DUMP_LOG to the Control
+// characteristic; new entries notify live from then on.
+void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 }  // namespace BleService
