@@ -1,6 +1,6 @@
 {
-  "name": "Bracelet",
-  "short_name": "Bracelet",
+  "name": "BioMonitor",
+  "short_name": "BioMonitor",
   "description": "Web Bluetooth dashboard for the biometric status bracelet",
   "start_url": "index.html",
   "scope": ".",
