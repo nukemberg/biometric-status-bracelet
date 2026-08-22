@@ -591,12 +591,19 @@ void renderBiometricPanel() {
 
   // --------------------------------------------------------------------------
   // SEGMENT 2: GSR EXCITEMENT VU-METER (LEDs 7 to 13)
+  //
+  // The strip is glued to the case in a spiral (seg 1 -> seg 3, physically the
+  // middle turn -> seg 2), and the data chain runs seg 2's 7 LEDs in the opposite
+  // direction from its own visual left-to-right span. ledIndex counts DOWN from 13
+  // rather than up from 7 so the VU-meter still fills in the correct physical
+  // direction; segments 1 and 3 need no such correction (1 is symmetric around its
+  // center, 3's data order already matches its physical direction).
   // --------------------------------------------------------------------------
   uint8_t litLedsGSR = (uint8_t)(excitement * 7.0 + 0.5);
   if (litLedsGSR > 7) litLedsGSR = 7;
 
   for (int i = 0; i < 7; i++) {
-    int ledIndex = 7 + i;
+    int ledIndex = 13 - i;
     if (i < litLedsGSR) {
       uint8_t hue = map(i, 0, 6, 96, 240); // Green -> Purple
       leds[ledIndex] = CHSV(hue, 255, 220);
