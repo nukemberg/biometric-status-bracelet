@@ -30,11 +30,18 @@ and must sit on **ADC1**: on both chips ADC2 is unusable while WiFi/BLE is activ
 | Grove GSR v1.2 (SIG, via RC) | GPIO 1 (ADC1_CH0) | GPIO 34 |
 | I²C SDA (MAX30102 + BME280) | GPIO 8 | GPIO 21 |
 | I²C SCL (MAX30102 + BME280) | GPIO 9 | GPIO 22 |
-| MAX30102 INT | GPIO 10 | GPIO 19 |
-| Button (to GND, pull-up) | GPIO 5 | GPIO 18 |
-| WS2812B data | GPIO 4 | GPIO 4 |
+| MAX30102 INT | GPIO 10 (wired, INT_ENABLE_1 PPG_RDY on; polled, not ISR-driven) | GPIO 19 |
+| Button (to GND, pull-up) | GPIO 5 -- **not populated on this build**, see below | GPIO 18 |
+| WS2812B data | GPIO 6 | GPIO 4 |
 
 GSR reaches the pin through a series 10 kΩ / shunt 1 µF RC — see §Analog conditioning.
+
+**WS2812B moved off GPIO4 on the S3 build**: that pin measured ~860 Ω to GND
+unpowered during bring-up (damaged), so the strip data line is on GPIO6 instead.
+`PIN_BUTTON` (GPIO5) is still wired in firmware (`processButton()`: short press
+cycles display mode, long press ≥1 s recalibrates GSR) but no external button is
+actually soldered on this build -- only the bare devkit's own BOOT/RESET are
+physically present, and the firmware does not read those.
 
 ### Sensors
 
@@ -49,7 +56,12 @@ GSR reaches the pin through a series 10 kΩ / shunt 1 µF RC — see §Analog co
   labelled side and the optical window faces skin.
 - **BME280** — I²C temperature/humidity. Address 0x76 or 0x77.
 - **WS2812B ×21** — 3 segments of 7, data via 330 Ω series resistor. Most strips accept
-  3.3 V logic; add a 74AHCT125 if flickering appears.
+  3.3 V logic; add a 74AHCT125 if flickering appears. Glued to the case in a **spiral**,
+  not a straight run: the data chain order is segment A → segment C (physically the
+  middle turn) → segment B, and segment B's physical LED order runs opposite the data
+  chain's. Firmware (`main_armband.ino`) captures this as `SEG_A`/`SEG_B`/`SEG_C`
+  (base index + direction) and a `segLed()` helper rather than raw index math — any
+  new segment-positional render must go through that, not a literal `7+i`.
 
 ### MAX30102 wiring notes
 
@@ -79,16 +91,26 @@ Three things that bite:
    cardiac AC away at the top of its range. Both present downstream as "no pulse" and
    neither announces itself. See §4.2.
 
-**INT is wired but not read.** The driver enables the PPG_RDY interrupt so the line
-carries a usable signal, but the DSP task polls the FIFO pointers at its 25 Hz
-decimation boundary instead — one 3-byte I²C read per 40 ms, no ISR. The pin is claimed
-so a future FIFO-driven path needs no rewiring. `PIN_PPG_INT` has no `pinMode`, no
-`attachInterrupt` and no reader anywhere in the tree; the wire is there for the future,
-not for today. Expect to find the line **latched low on a scope** — MAX30102 interrupts
-clear on reading the status register and nothing currently does. Harmless while unread,
-but it is the first thing to sort out when the ISR path gets built. The line is
-open-drain and needs a pull-up; the MH-ET board provides one, on whichever rail its
-`1V8`/`3V3` jumper selects.
+**INT is now wired and read, but only as a diagnostic.** `PIN_PPG_INT` (GPIO10) has a
+`pinMode(INPUT)` + `attachInterrupt(FALLING)`; the ISR just counts PPG_RDY edges
+(`ppgIntCount`). The DSP task still *drains the FIFO* by polling the pointers at its
+25 Hz decimation boundary rather than on the interrupt — that read is I²C and cannot
+happen inside an ISR — so the edge count exists purely as a second, independent check
+on the MAX30102's oscillator: `[PPG] fifo` (from FIFO pointer math) and `[PPG] int`
+(from counted edges) should track each other; a persistent mismatch would point at the
+ISR/wiring rather than the oscillator. Confirmed on-device: both settle around 25 Hz.
+
+Real bug found and fixed getting here: `Max30102::read()` read `FIFO_DATA` every
+drain but never `INT_STATUS_1` (register 0x00) — and on this part, **PPG_RDY clears
+only by reading INT_STATUS_1**, not by reading FIFO_DATA (that clears A_FULL). Without
+it the INT pin latches low on the very first sample and never releases. Confirmed with
+a raw GPIO10 polling test: 0 transitions over 10 s while the FIFO was draining fine.
+Fixed in `libraries/BraceletMAX30102/src/max30102.h` — `read()` now reads
+INT_STATUS_1 at the top of every call. The line is open-drain and needs a pull-up; the
+MH-ET board provides one, on whichever rail its `1V8`/`3V3` jumper selects — and the
+board's **second GND pin** (the `RD IRD INT` header, separate from the `VIN SDA SCL
+GND` header) needs wiring too, not just the SDA/SCL-side GND, or INT reads flat instead
+of toggling despite continuity checks passing.
 
 ### OVF_COUNTER is not a loss counter on this part
 
@@ -718,6 +740,15 @@ against ~45 mA for the MCU and 50–150 mA for the LEDs, so under 5 % of the bud
 worth a state machine and a third button gesture. Worth revisiting if actual current
 measurement contradicts the estimate.
 
+### Boot self-test
+
+After the LED driver comes up, `bootSelfTest()` flashes the whole strip blue for
+0.5 s (strip/wiring sanity), then holds 2 s of per-segment red/green: `SEG_A` = GSR
+(pass = raw ADC reading off both rails, GSR has no self-ID like an I²C device),
+`SEG_B` = MAX30102 found, `SEG_C` = BME280 found. The result also goes through
+`BleService::log()`, so it's in the Log ring buffer for a client that connects after
+boot, not just on the serial console at the moment it happened.
+
 ### Boot brownout — observed, not yet root-caused (-av5)
 
 After flashing, the board brownout-reset 2–3 times in a loop (`E BOD: Brownout detector
@@ -765,12 +796,21 @@ error, which is the exact failure this library exists to prevent. Both widened t
 | Vitals | notify | 4 Hz | 20 B | bpm×10, confidence, arousal, perfusion×100, gsr_raw, **pulse_raw (u32)**, temp×100, flags (worn/strobe/mode), brightness, gsr_tonic |
 | Signals | notify | 5 Hz | 66 B | 5 batched 25 Hz samples: **pulse_filtered (i32×10)**, **pulse_raw (u32)**, gsr_phasic, gsr_raw + start timestamp |
 | Spectrum | notify | 1 Hz | 56 B | 48 log-scaled resonator bin powers + peak bin + BPM range |
-| Control | write | — | 2–3 B | set mode, set brightness, recalibrate GSR, set stream mask, reset bank |
+| Control | write | — | 2–3 B | set mode, set brightness, recalibrate GSR, set stream mask, reset bank, reset config, dump log |
 | Config | read/write | — | var | `[paramId][float32]` writes; read returns all tunables packed |
 | Info | read | — | var | firmware version, build date, bin count |
+| Log | notify | on error / on demand | var | plain-ASCII `"<seconds>s <message>"`, no binary layout -- a debug aid, not the scientific data path |
 
 Signals and Spectrum are **opt-in** via the Control stream mask. A casual phone connection
 costs ~64 B/s; full dev streaming ~280 B/s.
+
+**Log** is a 20-entry ring buffer (`BLE_LOG_DEPTH`) of warnings/errors
+(`BleService::log()`, printf-style, always mirrored to Serial regardless of BLE
+state). Writing `CMD_DUMP_LOG` to Control replays the buffered history oldest-first
+over Log notifications; new entries then notify live. The web app subscribes and
+requests the replay right after connecting, showing a collapsible "Device log" panel.
+Kept intentionally outside the versioned binary protocol -- it doesn't need
+`BLE_PROTOCOL_VERSION` discipline since it's for a human, not a decoder.
 
 The Spectrum characteristic exists specifically to watch harmonic capture (§2.3) happen
 live, which offline analysis could only infer.
