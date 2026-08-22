@@ -1,7 +1,8 @@
 # Biometric Status Bracelet — Design
 
-A wearable festival/party biometrics panel worn on the forearm. It samples heart rate,
-skin conductance and temperature, and renders them on a 21-LED WS2812B matrix.
+A wearable festival/party biometrics panel worn on the forearm, mounted in a fabric
+sleeve with a velcro closure. It samples heart rate, skin conductance and temperature,
+and renders them on a 21-LED WS2812B matrix.
 
 Design priority, in order: **LED responsiveness > measurement accuracy > power**. This
 is a party wearable, not a medical device, and several decisions below only make sense
@@ -737,6 +738,12 @@ estimates.
 
 Stack is **NimBLE** (~250 KB flash vs ~700 KB for Bluedroid), keeping the default
 partition table.
+
+### Future idea: multi-device sync
+
+Not designed or scoped, just noted: a broadcast mode so nearby armbands could sync
+palettes/effects for a group of wearers at the same event. Would need its own GATT
+service or advertising-payload scheme; no work has started on this.
 
 ### GATT — one custom service
 
