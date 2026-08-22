@@ -26,12 +26,14 @@ and must sit on **ADC1**: on both chips ADC2 is unusable while WiFi/BLE is activ
 
 | Component | ESP32-S3 | WROOM-32 (dev) |
 |---|---|---|
-| Grove GSR v1.2 (SIG) | GPIO 1 (ADC1_CH0) | GPIO 34 |
+| Grove GSR v1.2 (SIG, via RC) | GPIO 1 (ADC1_CH0) | GPIO 34 |
 | I²C SDA (MAX30102 + BME280) | GPIO 8 | GPIO 21 |
 | I²C SCL (MAX30102 + BME280) | GPIO 9 | GPIO 22 |
 | MAX30102 INT | GPIO 10 | GPIO 19 |
 | Button (to GND, pull-up) | GPIO 5 | GPIO 18 |
 | WS2812B data | GPIO 4 | GPIO 4 |
+
+GSR reaches the pin through a series 10 kΩ / shunt 1 µF RC — see §Analog conditioning.
 
 ### Sensors
 
@@ -39,6 +41,11 @@ and must sit on **ADC1**: on both chips ADC2 is unusable while WiFi/BLE is activ
   rises. TP1 left disconnected. 3.3 V rail.
 - **MAX30102** — I²C reflective PPG, address **0x57**. Red + IR LEDs, 18-bit ADC,
   on-chip ambient subtraction. Replaced the analog XY1911-074 B506; see §3.6.
+  Board fitted is the **MH-ET LIVE** breakout: two 4-pin headers, `GND RD IRD INT` on
+  one side and `VIN SDA SCL GND` on the other. `RD`/`IRD` are the RED and IR LED drive
+  pins broken out for external LEDs — the onboard LEDs are fitted, so leave both
+  floating. The die is on the face *opposite* the silkscreen; headers solder to the
+  labelled side and the optical window faces skin.
 - **BME280** — I²C temperature/humidity. Address 0x76 or 0x77.
 - **WS2812B ×21** — 3 segments of 7, data via 330 Ω series resistor. Most strips accept
   3.3 V logic; add a 74AHCT125 if flickering appears.
@@ -57,6 +64,12 @@ Three things that bite:
    the ESP32's V_IH of 0.75 × 3.3 = 2.48 V, so *every* device on the bus including the
    BME280 stops responding. Cut those pull-ups and fit 4.7 kΩ to 3.3 V externally.
    SparkFun and Adafruit boards do not have this problem.
+
+   The MH-ET LIVE board fitted here exposes this as a **solder jumper on the top edge,
+   pads marked `1V8` and `3V3`** — it ships strapped either way, so verify rather than
+   assume. Same rail feeds the INT pull-up, not just SDA/SCL. Check by measuring SDA to
+   GND with the bus idle: want ~3.3 V, and ~1.8 V means move the jumper. An I²C scan
+   returning 0x57 confirms it end-to-end.
 2. **Decoupling.** The IR LED pulses at ~50 mA. 10 µF + 0.1 µF at the module, or the
    transient shows up on the GSR line — which is on the same 3.3 V rail and whose
    features of interest are 10–40 counts.
@@ -68,7 +81,13 @@ Three things that bite:
 **INT is wired but not read.** The driver enables the PPG_RDY interrupt so the line
 carries a usable signal, but the DSP task polls the FIFO pointers at its 25 Hz
 decimation boundary instead — one 3-byte I²C read per 40 ms, no ISR. The pin is claimed
-so a future FIFO-driven path needs no rewiring.
+so a future FIFO-driven path needs no rewiring. `PIN_PPG_INT` has no `pinMode`, no
+`attachInterrupt` and no reader anywhere in the tree; the wire is there for the future,
+not for today. Expect to find the line **latched low on a scope** — MAX30102 interrupts
+clear on reading the status register and nothing currently does. Harmless while unread,
+but it is the first thing to sort out when the ISR path gets built. The line is
+open-drain and needs a pull-up; the MH-ET board provides one, on whichever rail its
+`1V8`/`3V3` jumper selects.
 
 ### OVF_COUNTER is not a loss counter on this part
 
@@ -100,10 +119,12 @@ low bias on every reported BPM. Below the 3.19 BPM bin spacing at any plausible 
 no correction is applied; recorded here so it is a known quantity rather than a
 discovery.
 
-### Analog conditioning: 0.1 µF capacitors
+### Analog conditioning: shunt capacitor and the GSR RC
 
-A **0.1 µF ceramic capacitor is fitted from each analog signal pin to GND** (GPIO 34 and
-GPIO 35 on the dev board). Measured effect on the GSR line, before vs after:
+A **0.1 µF ceramic capacitor is fitted from the GSR signal pin to GND** (GPIO 34 on the
+dev board, GPIO 1 on the S3). A second one sat on GPIO 35 when that pin carried the
+analog PPG; the MAX30102 swap (§3.6) retired that channel, and GSR is now the only
+analog input. Measured effect on the GSR line, before vs after:
 
 | | Before | After |
 |---|---|---|
@@ -121,8 +142,40 @@ A 0.1 µF cap against the LM358's low output impedance has a corner far above 50
 it cannot attenuate mains meaningfully. What actually nulls 50 Hz is the firmware's
 20-sample boxcar (§3.1).
 
-If more analog rejection is ever wanted, a series 10 kΩ + 1 µF RC (fc ≈ 16 Hz) on the
-GSR pin would do real work; the bare shunt capacitor does not.
+**The RC that does do real work.** A series **10 kΩ** from the Grove SIG output into a
+shunt **1 µF** at the GPIO gives fc ≈ 16 Hz — about −10 dB at 50 Hz, which is modest next
+to what the boxcar already achieves. Its actual value is **anti-aliasing**: nothing else
+band-limits the GSR line ahead of a 500 Hz sampler, so everything above 250 Hz currently
+folds into the passband. Step response τ = 10 ms against sub-Hz phasic EDA content, so
+there is no signal cost.
+
+Three constraints, none optional:
+
+- **Order is series R first, then C at the pin** — never the reverse. The ESP32 ADC
+  sample-and-hold dumps charge onto a small internal cap at the sampling instant; a
+  10 kΩ series resistor on its own causes a settling error. The 1 µF sitting directly at
+  the GPIO is a large reservoir by comparison and supplies that charge. Keep it
+  physically close to the pin.
+- **Ceramic X7R or film, not electrolytic.** A few µA of electrolytic leakage across
+  10 kΩ becomes tens of mV of drifting offset — precisely the drift the GSR path is
+  already fighting (§2.5). Avoid Y5V.
+- The existing 0.1 µF is on the same node and simply parallels in (1.1 µF, fc ≈ 14.5 Hz).
+  Leave it or remove it; do not add a second.
+
+> **Not yet built or measured.** The before/after table above is the 0.1 µF cap alone.
+> Re-capture after fitting the RC and add a third column; if the std dev moves, the wear
+> window and arousal auto-range calibration want revisiting.
+
+**Why not a better ADC.** The obvious upgrades do not help this signal. GSR noise is
+±26.6 counts against a 12-bit LSB of ~0.8 mV, so the converter is roughly 30× quieter
+than the line it measures — an ADS1115 would resolve 0.06 mV and buy nothing but I²C
+traffic on the bus and core that already carry the MAX30102 FIFO and the DSP tick. An
+8-bit ADC0832 is strictly worse: VCC-referenced at 5 V gives a 19.5 mV LSB against a
+~140 mV working swing, collapsing 175 counts of range to about 7. A genuinely
+differential front end *would* reject body-coupled mains at the electrodes rather than
+after the fact, but the Grove board collapses to single-ended at its LM358, so that means
+replacing it — excitation divider, dual rail-to-rail buffer, sense resistor, the lot —
+and recalibrating everything downstream. The limit here is electrode contact, not bits.
 
 ---
 
