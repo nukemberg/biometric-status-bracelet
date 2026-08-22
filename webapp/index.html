@@ -108,6 +108,31 @@
   .link[data-state="live"] .dot { background: var(--arousal-lo); }
   .link[data-state="live"]      { color: var(--ink); }
 
+  /* ---- biofeedback: a breathing circle, scale driven per-frame from JS -- */
+  .biofeedback { padding: 1.2rem 0 0.6rem; text-align: center; }
+  .breath-stage {
+    position: relative;
+    height: 15rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .breath-circle {
+    width: 7rem;
+    height: 7rem;
+    border-radius: 50%;
+    background: var(--arousal-hi);
+    will-change: transform, background-color;
+  }
+  .breath-word {
+    position: absolute;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: 1.05rem;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5);
+  }
+  .breath-note { color: var(--ink-dim); font-size: 0.82rem; margin-top: 0.3rem; }
+
   /* ---- signature: a mirror of the 21 LEDs ------------------------------ */
   .device { padding: 1.6rem 0 1.3rem; }
 
@@ -346,6 +371,18 @@
     </div>
   </section>
 
+  <!-- Shown only in Biofeedback mode (v.mode === 3). Pace is GSR-adaptive, not fixed
+       -- see the breathPhase block in the render loop below -- so this mirrors the
+       exact same envelope the LED strip is animating on the wrist, not a canned
+       animation. -->
+  <section class="biofeedback" id="biofeedback" hidden>
+    <div class="breath-stage">
+      <div class="breath-circle" id="breathCircle"></div>
+      <div class="breath-word" id="breathWord">Breathe in</div>
+    </div>
+    <div class="breath-note">Pace follows GSR arousal — slower as you settle.</div>
+  </section>
+
   <section class="reading">
     <div class="bpm-row">
       <div class="bpm" id="bpm">--</div>
@@ -433,10 +470,12 @@ inferred from the number.">
   <section class="controls">
     <div class="control">
       <span class="eyebrow">Display</span>
-      <div class="segmented" role="group" aria-label="Display mode">
+      <div class="segmented" role="group" aria-label="Display mode"
+           style="grid-template-columns: repeat(4, 1fr)">
         <button type="button" data-mode="0" aria-pressed="false" disabled>Panel</button>
         <button type="button" data-mode="1" aria-pressed="false" disabled>Hype</button>
         <button type="button" data-mode="2" aria-pressed="false" disabled>Stealth</button>
+        <button type="button" data-mode="3" aria-pressed="false" disabled>Breathe</button>
       </div>
     </div>
 
@@ -698,6 +737,15 @@ let vitals = null;
 let phase = 0;
 let lastFrame = performance.now();
 
+// Breathing pacer for mode 3 ("Breathe"). Half-cycle (inhale or exhale) duration is
+// GSR-adaptive rather than fixed: short/urgent when aroused, long/slow once settled --
+// mirrors the same idea driving the LED strip's own biofeedback render, though the two
+// are computed independently (each side reads live vitals.arousal, not a shared phase
+// over the wire) and so will drift apart in exact timing, not just cosmetically.
+const BREATH_HALF_CYCLE_AROUSED_S = 3.0;
+const BREATH_HALF_CYCLE_CALM_S = 6.0;
+let breathPhase = 0;
+
 function frame(now) {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -733,6 +781,21 @@ function frame(now) {
       paint(leds.thermal[i],
             mixHex(css("--thermal-lo"), css("--thermal-hi"), i / (SEG - 1)),
             i < litT ? 0.85 : 0);
+    }
+
+    if (vitals.mode === 3) {
+      const halfCycle = lerp(
+        BREATH_HALF_CYCLE_AROUSED_S, BREATH_HALF_CYCLE_CALM_S, 1 - vitals.arousal);
+      breathPhase += (Math.PI / halfCycle) * dt;
+      breathPhase %= 2 * Math.PI;
+
+      // 0..PI = inhale (env rising 0->1), PI..2PI = exhale (env falling 1->0).
+      const env = 0.5 - 0.5 * Math.cos(breathPhase);
+      const scale = 0.6 + 0.6 * env;
+      const [r, g, b] = mixHex(css("--arousal-lo"), css("--arousal-hi"), vitals.arousal);
+      $("breathCircle").style.transform = `scale(${scale.toFixed(3)})`;
+      $("breathCircle").style.background = `rgb(${r} ${g} ${b})`;
+      $("breathWord").textContent = breathPhase < Math.PI ? "Breathe in" : "Breathe out";
     }
   }
   drawSignals();
@@ -854,6 +917,8 @@ function render(v) {
   for (const b of document.querySelectorAll("[data-mode]")) {
     b.setAttribute("aria-pressed", String(Number(b.dataset.mode) === v.mode));
   }
+  $("biofeedback").hidden = v.mode !== 3;
+
   const slider = $("brightness");
   if (document.activeElement !== slider) {
     slider.value = v.brightness;
@@ -1158,6 +1223,8 @@ async function connect() {
       $("spectrumCard").hidden = true;
       $("chartSignals").setAttribute("aria-pressed", "false");
       $("chartSpectrum").setAttribute("aria-pressed", "false");
+      $("biofeedback").hidden = true;
+      breathPhase = 0;
       vitals = null;
       $("bpm").textContent = "--";
       $("verdict").textContent = "Bracelet disconnected";

@@ -573,6 +573,42 @@ static inline uint8_t beatEnvelope(float phase) {
 }
 
 // ============================================================================
+// BIOFEEDBACK BREATHING PACER (mode 3)
+// ============================================================================
+// GSR-adaptive, not a fixed metronome: half-cycle (inhale or exhale) duration shortens
+// as arousal rises and lengthens as it settles, so the pacer follows the wearer then
+// gently invites a slower breath as GSR shows they're calming. Mirrored independently
+// in webapp/index.html (BREATH_HALF_CYCLE_*_S there) -- same idea, not a shared phase
+// over the wire, so the two will drift apart in exact timing, not just cosmetically.
+#define BREATH_HALF_CYCLE_AROUSED_S 3.0f
+#define BREATH_HALF_CYCLE_CALM_S    6.0f
+float breathPhase = 0.0f;
+uint32_t lastBreathMs = 0;
+
+void advanceBreathPhase(float excitement) {
+  uint32_t now = millis();
+  float dt = (lastBreathMs == 0) ? 0.0f : (now - lastBreathMs) / 1000.0f;
+  lastBreathMs = now;
+  if (dt <= 0.0f || dt > 1.0f) dt = 0.02f;   // first frame / after a stall
+
+  float halfCycle = BREATH_HALF_CYCLE_AROUSED_S +
+      (BREATH_HALF_CYCLE_CALM_S - BREATH_HALF_CYCLE_AROUSED_S) * (1.0f - excitement);
+  breathPhase += ((float)M_PI / halfCycle) * dt;
+  breathPhase = fmodf(breathPhase, 2.0f * (float)M_PI);
+}
+
+// Full-panel render, not the usual 3-segment split -- the whole strip is one breathing
+// mark, brighter/purpler with arousal, same hue range as the GSR VU-meter (96 green ->
+// 240 purple) for visual consistency with the rest of the panel's palette.
+void renderBreathing(float excitement) {
+  advanceBreathPhase(excitement);
+  float env = 0.5f - 0.5f * cosf(breathPhase);   // 0 at cycle start, 1 at the peak
+  uint8_t hue = (uint8_t)(96.0f + 144.0f * clampf(excitement, 0.0f, 1.0f));
+  uint8_t v = 40 + (uint8_t)(180.0f * env);
+  for (int i = 0; i < NUM_LEDS; i++) leds[i] = CHSV(hue, 255, v);
+}
+
+// ============================================================================
 // FASTLED MATRIX RENDER ENGINE (3 SEGMENTS x 7 LEDs)
 // ============================================================================
 void renderBiometricPanel() {
@@ -591,6 +627,11 @@ void renderBiometricPanel() {
   // Nothing on the wrist: show standby and return. Anything else would be inventing
   // a heart rate for an empty room.
   if (!worn) { renderStandby(); return; }
+
+  // Biofeedback mode replaces the usual 3-segment split with one full-panel
+  // breathing mark -- returns early rather than falling into the segment renders
+  // below, which would just be immediately overwritten.
+  if (mode == 3) { renderBreathing(excitement); return; }
 
   // --------------------------------------------------------------------------
   // SEGMENT 1: CARDIAC HEARTBEAT PULSE (LEDs 0 to 6)

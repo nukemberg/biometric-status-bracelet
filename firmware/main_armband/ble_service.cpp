@@ -76,7 +76,7 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
 
     switch (cmd) {
       case CMD_SET_MODE:
-        if (!hasArg || arg > 2) {
+        if (!hasArg || arg > 3) {  // 0 Panel, 1 Hype, 2 Stealth, 3 Breathe
           Serial.println(F("[BLE] set-mode: bad argument"));
           return;
         }

@@ -73,7 +73,7 @@
 
 // Control commands
 enum BleCommand : uint8_t {
-  CMD_SET_MODE       = 0x01,   // arg: mode 0..2
+  CMD_SET_MODE       = 0x01,   // arg: mode 0..3 (Panel/Hype/Stealth/Breathe)
   CMD_SET_BRIGHTNESS = 0x02,   // arg: 0..255
   CMD_RECALIBRATE_GSR= 0x03,   // no arg
   CMD_SET_STREAMS    = 0x04,   // arg: bitmask below
