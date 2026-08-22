@@ -81,6 +81,27 @@
 #define COLOR_ORDER     GRB
 #define LED_TYPE        WS2812B
 
+// The strip is glued to the case in a spiral, not a straight run: the data chain
+// order is seg1 -> seg3 (physically the middle turn) -> seg2, and seg2's physical
+// LED order runs opposite the data chain's, i.e. opposite its own visual
+// left-to-right span. Each segment is its first physical LED index plus a
+// direction (+1 forward, -1 reversed); segLed() maps a segment-local position
+// (0..SEGMENT_LEN-1) to the physical index that actually needs to light. Direction
+// only matters for a positional/gradient render -- a uniform fill across a segment
+// is unaffected either way.
+// Named A/B/C rather than by feature: which physiological reading each one shows
+// depends on the caller (renderBiometricPanel uses A=cardiac/B=GSR/C=thermal;
+// bootSelfTest uses the same three slots for GSR/pulse/temp status instead).
+#define SEGMENT_LEN     7   // NUM_LEDS / 3
+struct LedSegment { uint8_t base; int8_t dir; };
+constexpr LedSegment SEG_A = {0, 1};    // LEDs 0-6
+constexpr LedSegment SEG_B = {13, -1};  // LEDs 7-13, physically reversed
+constexpr LedSegment SEG_C = {14, 1};   // LEDs 14-20
+
+static inline uint8_t segLed(const LedSegment &seg, uint8_t i) {
+  return (uint8_t)(seg.base + seg.dir * i);
+}
+
 CRGB leds[NUM_LEDS];
 Adafruit_BME280 bme;
 bool bmeConnected = false;
@@ -573,7 +594,7 @@ void renderBiometricPanel() {
     // colourless sweep instead of a confident wrong colour. The other two segments
     // stay live because GSR and temperature are unaffected.
     uint8_t v = 10 + (uint8_t)(30.0f * (0.5f * (1.0f + sinf((float)millis() * 0.004f))));
-    for (int i = 0; i < 7; i++) leds[i] = CHSV(0, 0, v);
+    for (uint8_t i = 0; i < SEGMENT_LEN; i++) leds[segLed(SEG_A, i)] = CHSV(0, 0, v);
   } else {
     // Warm gradient: orange/yellow when slow, deep red as it climbs, pink at the top.
     uint8_t pulseHue = pulseHueFor(displayBpm);
@@ -582,28 +603,22 @@ void renderBiometricPanel() {
     // a marginal signal reads as "unsure" instead of as a dead panel.
     uint8_t sat = 120 + (uint8_t)(135.0f * fminf(1.0f, confidence / CONF_REF));
 
-    for (int i = 0; i < 7; i++) {
+    for (uint8_t i = 0; i < SEGMENT_LEN; i++) {
       float dist = fabsf((float)i - 3.0f);
       uint8_t v = beatEnvelope(beatPhase - dist * WAVE_LAG);
-      leds[i] = CHSV(pulseHue, sat, v);
+      leds[segLed(SEG_A, i)] = CHSV(pulseHue, sat, v);
     }
   }
 
   // --------------------------------------------------------------------------
-  // SEGMENT 2: GSR EXCITEMENT VU-METER (LEDs 7 to 13)
-  //
-  // The strip is glued to the case in a spiral (seg 1 -> seg 3, physically the
-  // middle turn -> seg 2), and the data chain runs seg 2's 7 LEDs in the opposite
-  // direction from its own visual left-to-right span. ledIndex counts DOWN from 13
-  // rather than up from 7 so the VU-meter still fills in the correct physical
-  // direction; segments 1 and 3 need no such correction (1 is symmetric around its
-  // center, 3's data order already matches its physical direction).
+  // SEGMENT 2: GSR EXCITEMENT VU-METER (LEDs 7 to 13, physically reversed --
+  // see SEG_B above)
   // --------------------------------------------------------------------------
   uint8_t litLedsGSR = (uint8_t)(excitement * 7.0 + 0.5);
-  if (litLedsGSR > 7) litLedsGSR = 7;
+  if (litLedsGSR > SEGMENT_LEN) litLedsGSR = SEGMENT_LEN;
 
-  for (int i = 0; i < 7; i++) {
-    int ledIndex = 13 - i;
+  for (uint8_t i = 0; i < SEGMENT_LEN; i++) {
+    uint8_t ledIndex = segLed(SEG_B, i);
     if (i < litLedsGSR) {
       uint8_t hue = map(i, 0, 6, 96, 240); // Green -> Purple
       leds[ledIndex] = CHSV(hue, 255, 220);
@@ -618,8 +633,8 @@ void renderBiometricPanel() {
   float tempClamped = constrain(tempC, 25.0, 34.0);
   uint8_t litLedsTemp = map((long)(tempClamped * 10), 250, 340, 1, 7);
 
-  for (int i = 0; i < 7; i++) {
-    int ledIndex = 14 + i;
+  for (uint8_t i = 0; i < SEGMENT_LEN; i++) {
+    uint8_t ledIndex = segLed(SEG_C, i);
     if (i < litLedsTemp) {
       uint8_t hue = map(i, 0, 6, 160, 0); // Blue -> Red
       leds[ledIndex] = CHSV(hue, 255, 200);
@@ -665,9 +680,11 @@ void bootSelfTest() {
   CRGB pulseColor = ppgConnected ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
   CRGB tempColor = bmeConnected ? CRGB(0, 255, 0) : CRGB(255, 0, 0);
 
-  for (int i = 0; i < 7; i++)  leds[i] = gsrColor;
-  for (int i = 7; i < 14; i++) leds[i] = pulseColor;
-  for (int i = 14; i < 21; i++) leds[i] = tempColor;
+  // Uniform per-segment fill -- direction doesn't matter here, only which physical
+  // LEDs belong to which segment, so segLed() with any i-order covers it.
+  for (uint8_t i = 0; i < SEGMENT_LEN; i++) leds[segLed(SEG_A, i)] = gsrColor;
+  for (uint8_t i = 0; i < SEGMENT_LEN; i++) leds[segLed(SEG_B, i)] = pulseColor;
+  for (uint8_t i = 0; i < SEGMENT_LEN; i++) leds[segLed(SEG_C, i)] = tempColor;
   FastLED.show();
 
   BleService::log("[boot] self-test | GSR raw=%u %s | Pulse %s | Temp %s",
