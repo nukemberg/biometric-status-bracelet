@@ -22,6 +22,7 @@ NimBLECharacteristic *logChr = nullptr;
 bool connected = false;
 uint8_t streams = 0;
 BleService::Handlers handlers;
+volatile uint32_t gLastLogMs = 0;
 
 // Ring buffer for BleService::log(). Overwrites oldest on wrap, same policy as the
 // signals ring buffer in main_armband.ino: a debug aid that falls behind must show
@@ -297,9 +298,12 @@ void log(const char *fmt, ...) {
   memcpy(e.text, text, sizeof text);
   logHead = (uint8_t)((logHead + 1) % BLE_LOG_DEPTH);
   if (logCount < BLE_LOG_DEPTH) logCount++;
+  gLastLogMs = e.ms;
 
   notifyLogEntry(e);
 }
+
+uint32_t lastLogMs() { return gLastLogMs; }
 
 }  // namespace BleService
 
@@ -321,6 +325,7 @@ void log(const char *fmt, ...) {
   va_end(args);
   Serial.println(text);
 }
+uint32_t lastLogMs() { return 0; }
 }  // namespace BleService
 
 #endif

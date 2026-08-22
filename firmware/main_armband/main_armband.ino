@@ -68,6 +68,7 @@
   #define PIN_PPG_INT     10
   #define PIN_BUTTON      5
   #define PIN_LED         6     // moved off GPIO4 -- that pin measured damaged
+  #define PIN_STATUS_LED  48    // onboard NeoPixel, S3 devkits only
 #else // Standard ESP32 DevKit WROOM-32
   #define PIN_GSR         34
   #define PIN_SDA         21
@@ -103,6 +104,13 @@ static inline uint8_t segLed(const LedSegment &seg, uint8_t i) {
 }
 
 CRGB leds[NUM_LEDS];
+
+#ifdef PIN_STATUS_LED
+// Onboard NeoPixel, driven as a second FastLED controller alongside the main strip
+// (one FastLED.show() flushes both). Independent of worn/display-mode state, so it
+// stays a useful "is this thing alive and connected" signal even in Standby.
+CRGB statusLed[1];
+#endif
 Adafruit_BME280 bme;
 bool bmeConnected = false;
 
@@ -661,6 +669,28 @@ void renderBiometricPanel() {
 }
 
 // ============================================================================
+// ONBOARD STATUS LED (BLE connection + error flash)
+// ============================================================================
+// Runs every frame regardless of worn/mode/standby state -- unlike the main strip,
+// this is meant to answer "is the radio up, connected, and has anything gone wrong"
+// at a glance, so it stays live in every display state including Standby.
+#ifdef PIN_STATUS_LED
+#define STATUS_FLASH_MS 400   // how long a new log entry stays red
+void renderStatusLed() {
+  uint32_t now = millis();
+  if (now - BleService::lastLogMs() < STATUS_FLASH_MS) {
+    statusLed[0] = CRGB(60, 0, 0);          // new error/warning -- flash red
+  } else if (BleService::isConnected()) {
+    statusLed[0] = CRGB(0, 25, 0);          // connected -- dim solid green
+  } else {
+    // Advertising, nobody connected -- dim breathing blue, ~0.5 Hz.
+    float breath = 0.5f * (1.0f + sinf((float)now * 0.0031f));
+    statusLed[0] = CRGB(0, 0, 4 + (uint8_t)(18.0f * breath));
+  }
+}
+#endif
+
+// ============================================================================
 // BOOT SELF-TEST
 // ============================================================================
 // All LEDs blue for 0.5s (strip/wiring sanity -- every pixel should visibly light),
@@ -771,6 +801,13 @@ void setup() {
   // deferring it until after the radio's inrush has settled avoids the brownout.
   Serial.println(F("[boot] init LED driver"));
   FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
+#ifdef PIN_STATUS_LED
+  // Same FastLED engine, second controller -- one show() flushes both. NOTE:
+  // FastLED.setBrightness() below is global across every registered controller, so
+  // the BLE brightness slider dims this too; setPixelColor values are already kept
+  // low so it stays subtle rather than glary at full brightness.
+  FastLED.addLeds<LED_TYPE, PIN_STATUS_LED, GRB>(statusLed, 1);
+#endif
   FastLED.setBrightness(bio.brightness);
   FastLED.clear();
   FastLED.show();
@@ -811,6 +848,9 @@ void loop() {
   processButton();
 
   renderBiometricPanel();
+#ifdef PIN_STATUS_LED
+  renderStatusLed();
+#endif
   FastLED.show();
 
   // 4 Hz vitals. Snapshot under the lock, pack and send outside it -- NimBLE can

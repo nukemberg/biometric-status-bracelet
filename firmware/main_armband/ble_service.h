@@ -76,4 +76,9 @@ bool isConnected();
 // characteristic; new entries notify live from then on.
 void log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+// millis() timestamp of the most recent log() call, 0 if none yet. For a caller that
+// wants to flash a status LED on new entries without subscribing to anything -- polls
+// this each frame rather than needing its own callback/queue.
+uint32_t lastLogMs();
+
 }  // namespace BleService
