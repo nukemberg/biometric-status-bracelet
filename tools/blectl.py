@@ -23,6 +23,8 @@ Examples:
     tools/blectl.py config get
     tools/blectl.py config set pi_trust_min 0.45
     tools/blectl.py config reset
+    tools/blectl.py log
+    tools/blectl.py log --seconds 30
 """
 
 from __future__ import annotations
@@ -310,6 +312,46 @@ CMDS = {
 }
 
 
+async def cmd_log(args) -> int:
+    """Replay the device's log ring buffer, then keep tailing new entries live.
+
+    Log (BLE_CHR_LOG) is plain ASCII, "<seconds since boot>s <message>", not the
+    versioned binary protocol -- it's a debug aid, so there is nothing to decode.
+    CMD_DUMP_LOG asks the device to replay its buffered history (oldest first)
+    over the same notify characteristic; must be sent AFTER subscribing, or the
+    replay notifications go out before the central has enabled them and are lost.
+    """
+    dev = await find_device(args.name, args.timeout)
+    if dev is None:
+        print("bracelet not found", file=sys.stderr)
+        return 1
+    print(f"# {dev.address}", file=sys.stderr)
+
+    count = 0
+
+    def on_log(_handle, data: bytearray):
+        nonlocal count
+        count += 1
+        print(data.decode(errors="replace"), flush=True)
+
+    try:
+        async with BleakClient(dev) as c:
+            await c.start_notify(proto.CHR_LOG, on_log)
+            await c.write_gatt_char(
+                proto.CHR_CONTROL, proto.encode_control(proto.CMD_DUMP_LOG),
+                response=True)
+            if args.seconds > 0:
+                await asyncio.sleep(args.seconds)
+            else:
+                while True:
+                    await asyncio.sleep(3600)
+            await c.stop_notify(proto.CHR_LOG)
+    except KeyboardInterrupt:
+        pass
+    print(f"# {count} log lines", file=sys.stderr)
+    return 0
+
+
 async def cmd_cmd(args) -> int:
     if args.command not in CMDS:
         print(f"unknown command; known: {', '.join(CMDS)}", file=sys.stderr)
@@ -424,6 +466,9 @@ def main() -> int:
     sp.add_argument("--floor", type=int, default=20, help="hide bins below this")
     sp.add_argument("--csv", help="write a 48-column CSV, one row per spectrum")
 
+    lg = sub.add_parser("log", parents=[common], help="replay + tail the device log")
+    lg.add_argument("--seconds", type=float, default=0.0, help="0 = until interrupted")
+
     cm = sub.add_parser("cmd", parents=[common], help="send a control command")
     cm.add_argument("command", choices=sorted(CMDS))
     cm.add_argument("value", nargs="?", type=int)
@@ -447,7 +492,7 @@ def main() -> int:
         return cmd_selftest(args)
     handler = {"scan": cmd_scan, "info": cmd_info, "monitor": cmd_monitor,
                "stream": cmd_stream, "spectrum": cmd_spectrum, "cmd": cmd_cmd,
-               "config": cmd_config}[args.cmd]
+               "config": cmd_config, "log": cmd_log}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
