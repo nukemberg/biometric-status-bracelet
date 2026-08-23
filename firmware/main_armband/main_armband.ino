@@ -78,6 +78,9 @@
   #define PIN_LED         4
 #endif
 
+// ESP32 input-high threshold, 0.75 x 3.3 V. An idle bus below this is not a bus.
+#define I2C_VIH_MV      2480
+
 #define NUM_LEDS        21
 #define COLOR_ORDER     GRB
 #define LED_TYPE        WS2812B
@@ -336,12 +339,43 @@ void processButton() {
 // ============================================================================
 // CORE 0 TASK: SENSOR SAMPLING & DSP
 // ============================================================================
+// ============================================================================
+// BME280 SAMPLE VALIDATION
+// ============================================================================
+// The BME280 has been seen reporting physically impossible values (185 C is the
+// one that showed up in the field). Adafruit_BME280 has no error return: a read
+// that gets corrupted on the wire, or that lands while the chip is mid-reset,
+// still comes back as a finite float computed from garbage raw counts. So the
+// plausibility check has to live here.
+//
+// Two gates, both needed:
+//   1. Absolute range. A worn armband's ambient never leaves 0..50 C or
+//      0..100 %RH. Anything outside that is not a reading.
+//   2. Slew rate. The sensor's thermal mass cannot move degrees in half a second,
+//      so a corrupted sample that happens to land inside the range still shows up
+//      as a jump. Only armed once one good sample has seeded it.
+//
+// A rejected sample is dropped, not clamped -- bio.tempC keeps the last good
+// value, which is the honest answer across a 500 ms gap. A long run of rejects
+// means the part or the bus is actually broken, so re-init rather than serve a
+// frozen value forever.
+static const float TEMP_MIN_C = 0.0f;
+static const float TEMP_MAX_C = 50.0f;
+static const float TEMP_MAX_SLEW_C = 5.0f;   // per 500 ms read interval
+static const float HUMIDITY_MIN_PCT = 0.0f;
+static const float HUMIDITY_MAX_PCT = 100.0f;
+static const uint8_t BME_MAX_REJECTS = 10;   // 5 s of bad reads -> re-init
+
 void TaskSensorDSP(void *pvParameters) {
   uint32_t accGsr = 0;
   uint8_t accN = 0;
   uint32_t lastIr = 0;
   uint16_t lastGsr = 0;
   unsigned long lastBmeRead = 0;
+  float lastGoodTempC = 0.0f;
+  bool bmeSeeded = false;
+  bool bmeTriggered = false;
+  uint8_t bmeRejects = 0;
   unsigned long lastPpgStat = 0;
 
   TickType_t lastWake = xTaskGetTickCount();
@@ -476,13 +510,69 @@ void TaskSensorDSP(void *pvParameters) {
     }
 
     if (bmeConnected && (millis() - lastBmeRead > 500)) {
-      float t = bme.readTemperature();
-      float h = bme.readHumidity();
-      bioDataLock();
-      if (!isnan(t)) bio.tempC = t;
-      if (!isnan(h)) bio.humidity = h;
-      bioDataUnlock();
       lastBmeRead = millis();
+
+      // Two-phase, because a forced conversion takes about 10 ms and this task owes
+      // its next tick in 2. takeForcedMeasurement() cannot cover that: it polls the
+      // status register's measuring bit, which this part never sets, so it returns
+      // immediately rather than waiting. So trigger here and read on the next pass
+      // 500 ms later, by which time the conversion is long finished. Cost is one
+      // read interval of latency on a signal that moves in minutes.
+      if (!bmeTriggered) {
+        // Nothing converted yet -- trigger only. (Not `continue`: the tail of this
+        // loop is the vTaskDelayUntil that gives the tick back.)
+        bme.takeForcedMeasurement();
+        bmeTriggered = true;
+      } else {
+        float t = bme.readTemperature();
+        float h = bme.readHumidity();
+        bme.takeForcedMeasurement();   // start the one we will read next time
+
+        bool tOk = !isnan(t) && t >= TEMP_MIN_C && t <= TEMP_MAX_C &&
+                   (!bmeSeeded || fabsf(t - lastGoodTempC) <= TEMP_MAX_SLEW_C);
+        bool hOk = !isnan(h) && h >= HUMIDITY_MIN_PCT && h <= HUMIDITY_MAX_PCT;
+
+        if (tOk) {
+          lastGoodTempC = t;
+          bmeSeeded = true;
+        }
+        if (tOk || hOk) {
+          bioDataLock();
+          if (tOk) bio.tempC = t;
+          if (hOk) bio.humidity = h;
+          bioDataUnlock();
+        }
+
+        if (tOk && hOk) {
+          bmeRejects = 0;
+        } else {
+          // Only the first reject of a run is logged: a stuck sensor read at 2 Hz
+          // would otherwise flush the 20-entry log ring in ten seconds and bury
+          // whatever else went wrong.
+          if (bmeRejects == 0) {
+            BleService::log("[bme] rejected T=%.1fC RH=%.0f%% (last good %.1fC)",
+                            t, h, bmeSeeded ? lastGoodTempC : 0.0f);
+          }
+          if (++bmeRejects >= BME_MAX_REJECTS) {
+            bmeRejects = 0;
+            bmeSeeded = false;
+            // Same task that owns every other I2C transfer, so re-init here is safe.
+            bmeConnected = bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire);
+            if (bmeConnected) {
+              // begin() resets the chip to the library's default normal mode, which
+              // this part will not hold -- put it back into forced mode.
+              bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                              Adafruit_BME280::SAMPLING_X1,
+                              Adafruit_BME280::SAMPLING_NONE,
+                              Adafruit_BME280::SAMPLING_X1,
+                              Adafruit_BME280::FILTER_OFF);
+            }
+            bmeTriggered = false;
+            BleService::log("[bme] %u consecutive bad reads -- re-init %s",
+                            BME_MAX_REJECTS, bmeConnected ? "OK" : "FAILED");
+          }
+        }
+      }
     }
 
     // Real sleep, not a spin. The old `while (micros() - startUs < 2000) {}` held
@@ -597,15 +687,43 @@ void advanceBreathPhase(float excitement) {
   breathPhase = fmodf(breathPhase, 2.0f * (float)M_PI);
 }
 
-// Full-panel render, not the usual 3-segment split -- the whole strip is one breathing
-// mark, brighter/purpler with arousal, same hue range as the GSR VU-meter (96 green ->
-// 240 purple) for visual consistency with the rest of the panel's palette.
+// Full-panel render, not the usual 3-segment split. Two earlier attempts read wrong on
+// real hardware: a uniform brightness pulse across all 21 LEDs had nothing directional
+// to follow, and a 1-D expanding bar (even once centered on the right physical LED)
+// looked like two arcs sliding apart rather than one shape. The physical mount is
+// genuinely a 3 (rows) x 7 (cols) rectangle -- SEG_A/SEG_C/SEG_B are the three rows,
+// SEG_C the physical center row -- so this grows a pixelated ovaloid blob outward from
+// the rectangle's center in both dimensions at once, elliptical rather than circular
+// so it reaches all four "corners" together despite the 7:3 aspect ratio. Mirrors the
+// expanding/contracting circle in webapp/index.html as the same gesture, not the same
+// shape -- a 3x7 grid can't read as a circle, pixelated is the honest version of it.
+// Hue is the GSR VU-meter's own range (96 green -> 240 purple) for palette consistency.
+static inline void paintBreathPixel(const LedSegment &seg, int row, int col,
+                                    float radius, uint8_t hue) {
+  uint8_t i = segLed(seg, (uint8_t)col);
+  float dr = (float)abs(row - 1);              // rows are 0,1,2; center row is 1
+  float dc = (float)abs(col - 3) / 3.0f;        // cols are 0..6; center col is 3
+  float dist = sqrtf(dr * dr + dc * dc);
+  if (dist <= radius) {
+    float edgeFade = radius > 0.0f ? 1.0f - 0.4f * (dist / radius) : 1.0f;
+    leds[i] = CHSV(hue, 255, (uint8_t)(210.0f * edgeFade));
+  } else {
+    leds[i] = CRGB(2, 2, 6);   // dim backdrop, not fully black
+  }
+}
+
 void renderBreathing(float excitement) {
   advanceBreathPhase(excitement);
-  float env = 0.5f - 0.5f * cosf(breathPhase);   // 0 at cycle start, 1 at the peak
+  float env = 0.5f - 0.5f * cosf(breathPhase);   // 0 at cycle start (empty), 1 at the peak (full)
   uint8_t hue = (uint8_t)(96.0f + 144.0f * clampf(excitement, 0.0f, 1.0f));
-  uint8_t v = 40 + (uint8_t)(180.0f * env);
-  for (int i = 0; i < NUM_LEDS; i++) leds[i] = CHSV(hue, 255, v);
+
+  const float maxDist = 1.41421356f;   // sqrt(2): normalized distance to a far corner
+  float radius = env * maxDist;
+  for (int col = 0; col < SEGMENT_LEN; col++) {
+    paintBreathPixel(SEG_A, 0, col, radius, hue);
+    paintBreathPixel(SEG_C, 1, col, radius, hue);
+    paintBreathPixel(SEG_B, 2, col, radius, hue);
+  }
 }
 
 // ============================================================================
@@ -769,6 +887,68 @@ void bootSelfTest() {
 }
 
 // ============================================================================
+// I2C BUS DIAGNOSTIC
+// ============================================================================
+// Both I2C parts going missing at once is a bus fault, not two dead sensors
+// (DESIGN.md 1) -- and the distinct bus faults this build can hit are
+// indistinguishable from the bmeConnected/ppgConnected booleans alone. So measure the
+// idle rail before Wire takes the pins, then scan the bus, and put both into the log
+// ring. The ring is replayed to the app on connect, so a failed boot self-reports
+// over BLE instead of needing a meter on the bench.
+//
+//   SDA and SCL both ~3.3 V    bus healthy
+//   both ~1.8 V                MH-ET pull-up jumper sits on the 1V8 pad (DESIGN.md 1)
+//   SDA ~0 V, SCL ~3.3 V       a slave is stuck mid-byte across an MCU reset and will
+//                              hold SDA down until clocked far enough to release it
+//   both ~0 V                  no pull-ups fitted, or the sensor rail is down
+static void i2cIdleProbe() {
+  // Read before Wire.begin(), which takes the pins over as open-drain outputs.
+  pinMode(PIN_SDA, INPUT);
+  pinMode(PIN_SCL, INPUT);
+  delayMicroseconds(100);   // let the external pull-ups settle after the pinMode
+
+#ifdef MCU_ESP32_S3
+  // GPIO8 = ADC1_CH7 and GPIO9 = ADC1_CH8 on the S3, so read the actual idle voltage.
+  // digitalRead cannot do this job: 1.8 V and 0 V both read LOW against the 2.48 V
+  // V_IH, and those two are different faults with different fixes.
+  uint32_t sda = analogReadMilliVolts(PIN_SDA);
+  uint32_t scl = analogReadMilliVolts(PIN_SCL);
+  BleService::log("[i2c] idle SDA=%umV SCL=%umV", (unsigned)sda, (unsigned)scl);
+  if (sda < I2C_VIH_MV || scl < I2C_VIH_MV) {
+    BleService::log("[i2c] idle under V_IH %umV -- bus fault, see DESIGN.md 1",
+                    (unsigned)I2C_VIH_MV);
+  }
+#else
+  // GPIO21/22 on the classic ESP32 are not ADC pins; a logic level is all there is.
+  BleService::log("[i2c] idle SDA=%s SCL=%s",
+                  digitalRead(PIN_SDA) ? "HIGH" : "LOW",
+                  digitalRead(PIN_SCL) ? "HIGH" : "LOW");
+#endif
+}
+
+// Address-only scan of the 7-bit range, run after Wire.begin() and before any driver
+// touches the bus. Logs one line whatever the outcome, so the absence of a device is
+// as visible as its presence -- 0x57 is the MAX30102, 0x76/0x77 the BME280.
+static void i2cScan() {
+  char found[64];
+  size_t n = 0;
+  uint8_t count = 0;
+  for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) continue;
+    count++;
+    if (n < sizeof found - 6) {
+      n += snprintf(found + n, sizeof found - n, "%s0x%02X", n ? " " : "", addr);
+    }
+  }
+  if (count == 0) {
+    BleService::log("[i2c] scan found nothing -- bus is down, not the sensors");
+  } else {
+    BleService::log("[i2c] scan found %u: %s", (unsigned)count, found);
+  }
+}
+
+// ============================================================================
 // MAIN SETUP & LOOP
 // ============================================================================
 void setup() {
@@ -796,14 +976,31 @@ void setup() {
   // then init the RMT driver once the radio is stable and advertising.
   // Root cause still wants a real current measurement; see -av5.
 
+  i2cIdleProbe();
+
   Wire.begin(PIN_SDA, PIN_SCL);
   // 400 kHz. The bus now carries the 25 Hz PPG drain as well as the 2 Hz BME280 read;
   // at 100 kHz a 6-byte FIFO burst plus its pointer read is a meaningful slice of the
   // 40 ms decimation budget on the same task that has to hit a 2 ms tick.
   Wire.setClock(400000);
+  i2cScan();
 
   if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
     bmeConnected = true;
+    // FORCED, not the library's default normal mode. Bench-measured on this part
+    // (firmware/bme_test): a write of mode=normal to ctrl_meas is ACKed and reads
+    // back correctly, then clears itself to sleep within 1 ms. The chip therefore
+    // never converts, the raw registers keep their 0x80000 power-on value, and
+    // readTemperature() returns a constant fabricated ~21.5 C forever -- a plausible
+    // room temperature, which is why it went unnoticed. Forced mode is retained and
+    // converts correctly on the same part, so every reading is explicitly triggered.
+    // Pressure is skipped: nothing here uses it, and skipping it shortens the
+    // conversion and cuts self-heating.
+    bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X1,       // temperature
+                    Adafruit_BME280::SAMPLING_NONE,     // pressure -- unused
+                    Adafruit_BME280::SAMPLING_X1,       // humidity
+                    Adafruit_BME280::FILTER_OFF);
   }
 
   ppgConnected = ppg.begin(Wire);
@@ -982,7 +1179,13 @@ void loop() {
       Serial.print(F("-"));
       Serial.print(GSR_WORN_MAX);
       Serial.print(F(") | IR: "));
-      Serial.println(irRaw);
+      Serial.print(irRaw);
+      // Temperature only appeared on the worn line, so a sensor stuck at a
+      // plausible-looking constant was invisible on a bench device that is never
+      // worn -- which is how a BME280 that never converted went unnoticed.
+      Serial.print(F(" | Temp: "));
+      Serial.print(tempC, 2);
+      Serial.println(F(" C"));
     } else {
       Serial.print(F("[Biometrics] Live BPM: "));
       Serial.print(bpm, 1);

@@ -4,27 +4,35 @@
 
 set dotenv-load
 
-FQBN := "esp32:esp32:esp32"
-PORT := "cu.usbserial-0001"
+# ESP32-S3 DevKit, matching the MCU_ESP32_S3 pin map in main_armband.ino. CDCOnBoot=cdc
+# routes Serial over the S3's native USB, which is the only serial the board exposes --
+# without it every Serial.print goes to the unpopulated UART0 header and boot looks dead.
+FQBN := "esp32:esp32:esp32s3:CDCOnBoot=cdc"
+# Native USB CDC enumerates as usbmodem, not the CP210x usbserial of the old WROOM board.
+PORT := "cu.usbmodem101"
 SKETCH := "firmware/main_armband"
 LIBS := "--libraries ./libraries"
+# Pinned so `flash` can find what `build` produced. Without it arduino-cli writes to a
+# hashed path under the system cache and the two recipes disagree about where the
+# binary is.
+BUILD := "firmware/main_armband/build"
 
 # ---- build --------------------------------------------------------------
 
 # Compile the firmware (default recipe)
 build:
-    arduino-cli compile --fqbn {{FQBN}} {{LIBS}} {{SKETCH}}
+    arduino-cli compile --fqbn {{FQBN}} {{LIBS}} --build-path {{BUILD}} {{SKETCH}}
 
 # Alias
 compile: build
 
 # Compile and flash
 upload: build
-    arduino-cli compile --upload --port /dev/{{PORT}} --fqbn {{FQBN}} {{LIBS}} {{SKETCH}}
+    arduino-cli upload --port /dev/{{PORT}} --fqbn {{FQBN}} --input-dir {{BUILD}} {{SKETCH}}
 
 # Flash without recompiling
 flash:
-    arduino-cli upload --port /dev/{{PORT}} --fqbn {{FQBN}} --input-dir {{SKETCH}}/build/esp32.esp32.{{SKETCH}}
+    arduino-cli upload --port /dev/{{PORT}} --fqbn {{FQBN}} --input-dir {{BUILD}} {{SKETCH}}
 
 # ---- serial ----------------------------------------------------------------
 
