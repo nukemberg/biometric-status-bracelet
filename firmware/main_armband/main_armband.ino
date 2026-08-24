@@ -43,6 +43,7 @@
 #include <FastLED.h>
 #include <max30102.h>
 #include <math.h>
+#include <esp_system.h>   // esp_reset_reason() -- was this boot a brownout? see -iee
 
 // ============================================================================
 // MCU HARDWARE SELECTION
@@ -988,6 +989,25 @@ static void i2cScan() {
   }
 }
 
+// Was this boot a brownout? The hardware brownout detector latches its own reset
+// reason distinctly from a normal power-on, so this settles it without a meter --
+// see the -iee comment on i2cIdleProbe()/tryInitSensors() above for why that matters.
+static const char *resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT (reset pin/button)";
+    case ESP_RST_SW:        return "SW (esp_restart or upload)";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT (other)";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP wake";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
+
 // Attempts BME280 + MAX30102 init, sets bmeConnected/ppgConnected, returns whether
 // either answered. Callable more than once -- setup() retries it once after a settle
 // delay if both come up missing, see the i2c-bus-fault comment at the call site.
@@ -1020,6 +1040,11 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
+  // First line out, before anything else can obscure it. A BROWNOUT here means the
+  // BOD tripped on THIS boot specifically -- ties any I2C fault seen on the same
+  // boot straight to -av5/-iee instead of leaving it a coincidence.
+  BleService::log("[boot] reset reason: %s", resetReasonName(esp_reset_reason()));
+
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   // GSR is the only ADC channel left; the MAX30102 brings its own 18-bit converter.
   analogReadResolution(12);
@@ -1040,7 +1065,51 @@ void setup() {
   // threshold. Fix: bring the radio up FIRST with the LED data line still floating,
   // then init the RMT driver once the radio is stable and advertising.
   // Root cause still wants a real current measurement; see -av5.
+  //
+  // I2C init itself moved below (after the radio AND the LED driver are both up) as
+  // an -iee experiment: the SDA-stuck-low boot fault reads ~600mV, well under a
+  // healthy ~3.3V idle, which looks more like a depressed 3.3V rail than a genuinely
+  // stuck slave -- pull-ups reference VDD, so a sagging rail pulls SDA low right
+  // alongside it. If that dip is from inrush this file already knows how to dodge
+  // (the same -av5 staging above), probing I2C only after both settle should see
+  // fewer faults than probing it early. Not confirmed; see -iee for the reasoning
+  // and for what to do if this does not move the fault rate.
 
+  // Started after the DSP task so the jitter monitor has a clean window before the
+  // radio exists; -a75 compares the two.
+  xTaskCreatePinnedToCore(TaskSensorDSP, "SensorDSP", 4096, NULL, 2, NULL, 0);
+
+  Serial.println(F("[boot] starting radio"));
+  BleService::Handlers h;
+  h.setMode = onSetMode;
+  h.setBrightness = onSetBrightness;
+  h.recalibrateGsr = onRecalibrateGsr;
+  h.setStreams = onSetStreams;
+  h.resetBank = onResetBank;
+  h.resetConfig = onResetConfig;
+  h.getConfig = onGetConfig;
+  h.setConfigParam = onSetConfigParam;
+  BleService::begin("Bracelet", h);
+
+  // Radio is up and advertising. NOW init the LED strip -- the RMT driver's GPIO
+  // configuration is what interacts with the strip's input capacitance, so
+  // deferring it until after the radio's inrush has settled avoids the brownout.
+  Serial.println(F("[boot] init LED driver"));
+  FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
+#ifdef PIN_STATUS_LED
+  // Same FastLED engine, second controller -- one show() flushes both. NOTE:
+  // FastLED.setBrightness() below is global across every registered controller, so
+  // the BLE brightness slider dims this too; setPixelColor values are already kept
+  // low so it stays subtle rather than glary at full brightness.
+  FastLED.addLeds<LED_TYPE, PIN_STATUS_LED, GRB>(statusLed, 1);
+#endif
+  FastLED.setBrightness(bio.brightness);
+  FastLED.clear();
+  FastLED.show();
+
+  // -iee experiment: I2C init here, after both the radio and the LED driver have
+  // taken their inrush, instead of before either (see the comment above where this
+  // block used to live).
   i2cIdleProbe();
 
   Wire.begin(PIN_SDA, PIN_SCL);
@@ -1076,38 +1145,6 @@ void setup() {
     pinMode(PIN_PPG_INT, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_PPG_INT), onPpgInt, FALLING);
   }
-
-  // Started after the DSP task so the jitter monitor has a clean window before the
-  // radio exists; -a75 compares the two.
-  xTaskCreatePinnedToCore(TaskSensorDSP, "SensorDSP", 4096, NULL, 2, NULL, 0);
-
-  Serial.println(F("[boot] starting radio"));
-  BleService::Handlers h;
-  h.setMode = onSetMode;
-  h.setBrightness = onSetBrightness;
-  h.recalibrateGsr = onRecalibrateGsr;
-  h.setStreams = onSetStreams;
-  h.resetBank = onResetBank;
-  h.resetConfig = onResetConfig;
-  h.getConfig = onGetConfig;
-  h.setConfigParam = onSetConfigParam;
-  BleService::begin("Bracelet", h);
-
-  // Radio is up and advertising. NOW init the LED strip -- the RMT driver's GPIO
-  // configuration is what interacts with the strip's input capacitance, so
-  // deferring it until after the radio's inrush has settled avoids the brownout.
-  Serial.println(F("[boot] init LED driver"));
-  FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
-#ifdef PIN_STATUS_LED
-  // Same FastLED engine, second controller -- one show() flushes both. NOTE:
-  // FastLED.setBrightness() below is global across every registered controller, so
-  // the BLE brightness slider dims this too; setPixelColor values are already kept
-  // low so it stays subtle rather than glary at full brightness.
-  FastLED.addLeds<LED_TYPE, PIN_STATUS_LED, GRB>(statusLed, 1);
-#endif
-  FastLED.setBrightness(bio.brightness);
-  FastLED.clear();
-  FastLED.show();
 
   bootSelfTest();
 
