@@ -901,6 +901,43 @@ void bootSelfTest() {
 //   SDA ~0 V, SCL ~3.3 V       a slave is stuck mid-byte across an MCU reset and will
 //                              hold SDA down until clocked far enough to release it
 //   both ~0 V                  no pull-ups fitted, or the sensor rail is down
+// Standard I2C bus-recovery clock-out (I2C spec, "Bus Clear" / Fig. 12 in the UM10204
+// application note): pulse SCL up to 9 times -- enough to complete any byte a slave
+// could be mid-way through -- while SDA is read-only, then issue a STOP condition
+// (SDA low -> high while SCL is held high) to reset every slave's state machine to
+// idle. Runs only for the specific "a slave is stuck mid-byte across an MCU reset"
+// signature i2cIdleProbe() below identifies (SDA low, SCL fine) -- clocking a bus
+// that is down for some other reason (no pull-ups, wrong rail) does nothing useful
+// and risks disturbing a device that was never actually stuck.
+static void i2cBusRecovery() {
+  pinMode(PIN_SCL, OUTPUT);
+  digitalWrite(PIN_SCL, HIGH);
+  pinMode(PIN_SDA, INPUT);
+
+  int pulses = 0;
+  for (; pulses < 9 && !digitalRead(PIN_SDA); pulses++) {
+    digitalWrite(PIN_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(PIN_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+
+  // STOP: SDA low -> high while SCL is high (true here regardless of how many
+  // pulses ran above -- the loop always leaves SCL HIGH as its last action).
+  pinMode(PIN_SDA, OUTPUT);
+  digitalWrite(PIN_SDA, LOW);
+  delayMicroseconds(5);
+  digitalWrite(PIN_SDA, HIGH);
+  delayMicroseconds(5);
+
+  pinMode(PIN_SDA, INPUT);
+  pinMode(PIN_SCL, INPUT);
+
+  BleService::log("[i2c] bus recovery: %d clock pulse%s, SDA %s",
+                  pulses, pulses == 1 ? "" : "s",
+                  digitalRead(PIN_SDA) ? "released" : "STILL STUCK");
+}
+
 static void i2cIdleProbe() {
   // Read before Wire.begin(), which takes the pins over as open-drain outputs.
   pinMode(PIN_SDA, INPUT);
@@ -917,12 +954,15 @@ static void i2cIdleProbe() {
   if (sda < I2C_VIH_MV || scl < I2C_VIH_MV) {
     BleService::log("[i2c] idle under V_IH %umV -- bus fault, see DESIGN.md 1",
                     (unsigned)I2C_VIH_MV);
+    if (sda < I2C_VIH_MV && scl >= I2C_VIH_MV) i2cBusRecovery();
   }
 #else
   // GPIO21/22 on the classic ESP32 are not ADC pins; a logic level is all there is.
-  BleService::log("[i2c] idle SDA=%s SCL=%s",
-                  digitalRead(PIN_SDA) ? "HIGH" : "LOW",
-                  digitalRead(PIN_SCL) ? "HIGH" : "LOW");
+  bool sdaHigh = digitalRead(PIN_SDA);
+  bool sclHigh = digitalRead(PIN_SCL);
+  BleService::log("[i2c] idle SDA=%s SCL=%s", sdaHigh ? "HIGH" : "LOW",
+                  sclHigh ? "HIGH" : "LOW");
+  if (!sdaHigh && sclHigh) i2cBusRecovery();
 #endif
 }
 
@@ -946,6 +986,31 @@ static void i2cScan() {
   } else {
     BleService::log("[i2c] scan found %u: %s", (unsigned)count, found);
   }
+}
+
+// Attempts BME280 + MAX30102 init, sets bmeConnected/ppgConnected, returns whether
+// either answered. Callable more than once -- setup() retries it once after a settle
+// delay if both come up missing, see the i2c-bus-fault comment at the call site.
+static bool tryInitSensors() {
+  bmeConnected = bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire);
+  if (bmeConnected) {
+    // FORCED, not the library's default normal mode. Bench-measured on this part
+    // (firmware/bme_test): a write of mode=normal to ctrl_meas is ACKed and reads
+    // back correctly, then clears itself to sleep within 1 ms. The chip therefore
+    // never converts, the raw registers keep their 0x80000 power-on value, and
+    // readTemperature() returns a constant fabricated ~21.5 C forever -- a plausible
+    // room temperature, which is why it went unnoticed. Forced mode is retained and
+    // converts correctly on the same part, so every reading is explicitly triggered.
+    // Pressure is skipped: nothing here uses it, and skipping it shortens the
+    // conversion and cuts self-heating.
+    bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X1,       // temperature
+                    Adafruit_BME280::SAMPLING_NONE,     // pressure -- unused
+                    Adafruit_BME280::SAMPLING_X1,       // humidity
+                    Adafruit_BME280::FILTER_OFF);
+  }
+  ppgConnected = ppg.begin(Wire);
+  return bmeConnected || ppgConnected;
 }
 
 // ============================================================================
@@ -985,25 +1050,19 @@ void setup() {
   Wire.setClock(400000);
   i2cScan();
 
-  if (bme.begin(0x76, &Wire) || bme.begin(0x77, &Wire)) {
-    bmeConnected = true;
-    // FORCED, not the library's default normal mode. Bench-measured on this part
-    // (firmware/bme_test): a write of mode=normal to ctrl_meas is ACKed and reads
-    // back correctly, then clears itself to sleep within 1 ms. The chip therefore
-    // never converts, the raw registers keep their 0x80000 power-on value, and
-    // readTemperature() returns a constant fabricated ~21.5 C forever -- a plausible
-    // room temperature, which is why it went unnoticed. Forced mode is retained and
-    // converts correctly on the same part, so every reading is explicitly triggered.
-    // Pressure is skipped: nothing here uses it, and skipping it shortens the
-    // conversion and cuts self-heating.
-    bme.setSampling(Adafruit_BME280::MODE_FORCED,
-                    Adafruit_BME280::SAMPLING_X1,       // temperature
-                    Adafruit_BME280::SAMPLING_NONE,     // pressure -- unused
-                    Adafruit_BME280::SAMPLING_X1,       // humidity
-                    Adafruit_BME280::FILTER_OFF);
+  if (!tryInitSensors()) {
+    // Both missing after a clean scan is the bus-fault signature (DESIGN.md 1). The
+    // 2026-08-24 bus-recovery clock-out (i2cBusRecovery above) has been observed to
+    // release a stuck SDA electrically -- idle probe reads it HIGH again -- without
+    // the sensors answering immediately afterward. Consistent with the rail or the
+    // slaves needing real settle time, not just clock pulses; a fixed retry after a
+    // short wait costs nothing on a healthy boot, since this branch only runs when
+    // both are already missing. Still open in -iee if this is not enough.
+    BleService::log("[i2c] both sensors missing -- retrying after settle");
+    delay(100);
+    tryInitSensors();
   }
 
-  ppgConnected = ppg.begin(Wire);
   if (ppgConnected) {
     Serial.println(F("[boot] MAX30102 ready (IR, 25 Hz FIFO)"));
   } else {
