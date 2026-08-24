@@ -970,13 +970,23 @@ static void i2cIdleProbe() {
 // Address-only scan of the 7-bit range, run after Wire.begin() and before any driver
 // touches the bus. Logs one line whatever the outcome, so the absence of a device is
 // as visible as its presence -- 0x57 is the MAX30102, 0x76/0x77 the BME280.
+// Wire.endTransmission() error codes (ESP32 core): 0 success, 1 data too long for the
+// TX buffer, 2 NACK on the address byte, 3 NACK on a data byte, 4 other error, 5
+// timeout. A scan of an empty bus is normal and returns 2 (NACK-address) at every
+// unpopulated address -- that alone is not a fault. 4 or 5 at more than a couple of
+// addresses IS: it means the bus itself is stuck or busy, not just quiet, which is a
+// different problem with a different fix (see -iee for a broken-solder-joint case
+// that produced exactly this signature).
 static void i2cScan() {
   char found[64];
   size_t n = 0;
   uint8_t count = 0;
+  uint8_t errCount[6] = {0};   // indexed by the endTransmission() code, 0..5
   for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
     Wire.beginTransmission(addr);
-    if (Wire.endTransmission() != 0) continue;
+    uint8_t err = Wire.endTransmission();
+    if (err <= 5) errCount[err]++;
+    if (err != 0) continue;
     count++;
     if (n < sizeof found - 6) {
       n += snprintf(found + n, sizeof found - n, "%s0x%02X", n ? " " : "", addr);
@@ -986,6 +996,14 @@ static void i2cScan() {
     BleService::log("[i2c] scan found nothing -- bus is down, not the sensors");
   } else {
     BleService::log("[i2c] scan found %u: %s", (unsigned)count, found);
+  }
+  // NACK-on-address (code 2) at every other address is the routine "nothing there"
+  // response and not worth a line on its own -- only log when something else showed
+  // up, since that is the part that actually needs explaining.
+  uint8_t other = errCount[1] + errCount[3] + errCount[4] + errCount[5];
+  if (other > 0) {
+    BleService::log("[i2c] scan errors: len=%u dataNACK=%u other=%u timeout=%u",
+                    errCount[1], errCount[3], errCount[4], errCount[5]);
   }
 }
 
@@ -1066,14 +1084,46 @@ void setup() {
   // then init the RMT driver once the radio is stable and advertising.
   // Root cause still wants a real current measurement; see -av5.
   //
-  // I2C init itself moved below (after the radio AND the LED driver are both up) as
-  // an -iee experiment: the SDA-stuck-low boot fault reads ~600mV, well under a
-  // healthy ~3.3V idle, which looks more like a depressed 3.3V rail than a genuinely
-  // stuck slave -- pull-ups reference VDD, so a sagging rail pulls SDA low right
-  // alongside it. If that dip is from inrush this file already knows how to dodge
-  // (the same -av5 staging above), probing I2C only after both settle should see
-  // fewer faults than probing it early. Not confirmed; see -iee for the reasoning
-  // and for what to do if this does not move the fault rate.
+  // I2C init is back here, before both, matching that original order. A 2026-08-24
+  // -iee experiment moved it to after radio+LED instead, on the theory that the
+  // SDA-stuck-low boot fault was a depressed rail from the same inrush this staging
+  // dodges -- moving it later made no difference (fault reproduced at the same rate
+  // regardless), and the actual root cause turned out to be a broken SDA solder
+  // joint, unrelated to init order or power sequencing at all. See -iee.
+
+  i2cIdleProbe();
+
+  Wire.begin(PIN_SDA, PIN_SCL);
+  // 400 kHz. The bus now carries the 25 Hz PPG drain as well as the 2 Hz BME280 read;
+  // at 100 kHz a 6-byte FIFO burst plus its pointer read is a meaningful slice of the
+  // 40 ms decimation budget on the same task that has to hit a 2 ms tick.
+  Wire.setClock(400000);
+  i2cScan();
+
+  if (!tryInitSensors()) {
+    // Both missing after a clean scan is the bus-fault signature (DESIGN.md 1). Root
+    // cause on this build turned out to be a broken SDA solder joint (-iee) -- not
+    // power sequencing or a stuck-slave protocol state -- so this retry mostly just
+    // gives an intermittent joint one more chance to make contact. Costs nothing on
+    // a healthy boot, since this branch only runs when both are already missing.
+    BleService::log("[i2c] both sensors missing -- retrying after settle");
+    delay(100);
+    tryInitSensors();
+  }
+
+  if (ppgConnected) {
+    Serial.println(F("[boot] MAX30102 ready (IR, 25 Hz FIFO)"));
+  } else {
+    BleService::log("[boot] MAX30102 NOT FOUND -- pulse will not track");
+  }
+
+  if (ppgConnected) {
+    // MAX30102's INT is open-drain, active-low, and the breakout's own pull-up
+    // rail feeds it (same rail as SDA/SCL -- see DESIGN.md 1), so plain INPUT here,
+    // not INPUT_PULLUP, to avoid fighting that external pull-up.
+    pinMode(PIN_PPG_INT, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PIN_PPG_INT), onPpgInt, FALLING);
+  }
 
   // Started after the DSP task so the jitter monitor has a clean window before the
   // radio exists; -a75 compares the two.
@@ -1106,45 +1156,6 @@ void setup() {
   FastLED.setBrightness(bio.brightness);
   FastLED.clear();
   FastLED.show();
-
-  // -iee experiment: I2C init here, after both the radio and the LED driver have
-  // taken their inrush, instead of before either (see the comment above where this
-  // block used to live).
-  i2cIdleProbe();
-
-  Wire.begin(PIN_SDA, PIN_SCL);
-  // 400 kHz. The bus now carries the 25 Hz PPG drain as well as the 2 Hz BME280 read;
-  // at 100 kHz a 6-byte FIFO burst plus its pointer read is a meaningful slice of the
-  // 40 ms decimation budget on the same task that has to hit a 2 ms tick.
-  Wire.setClock(400000);
-  i2cScan();
-
-  if (!tryInitSensors()) {
-    // Both missing after a clean scan is the bus-fault signature (DESIGN.md 1). The
-    // 2026-08-24 bus-recovery clock-out (i2cBusRecovery above) has been observed to
-    // release a stuck SDA electrically -- idle probe reads it HIGH again -- without
-    // the sensors answering immediately afterward. Consistent with the rail or the
-    // slaves needing real settle time, not just clock pulses; a fixed retry after a
-    // short wait costs nothing on a healthy boot, since this branch only runs when
-    // both are already missing. Still open in -iee if this is not enough.
-    BleService::log("[i2c] both sensors missing -- retrying after settle");
-    delay(100);
-    tryInitSensors();
-  }
-
-  if (ppgConnected) {
-    Serial.println(F("[boot] MAX30102 ready (IR, 25 Hz FIFO)"));
-  } else {
-    BleService::log("[boot] MAX30102 NOT FOUND -- pulse will not track");
-  }
-
-  if (ppgConnected) {
-    // MAX30102's INT is open-drain, active-low, and the breakout's own pull-up
-    // rail feeds it (same rail as SDA/SCL -- see DESIGN.md 1), so plain INPUT here,
-    // not INPUT_PULLUP, to avoid fighting that external pull-up.
-    pinMode(PIN_PPG_INT, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN_PPG_INT), onPpgInt, FALLING);
-  }
 
   bootSelfTest();
 
