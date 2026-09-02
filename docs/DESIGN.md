@@ -685,6 +685,29 @@ just config-set pi_trust_min <value>
 Once it has held up across a few sessions, move the default in `dsp.h` so a config reset
 lands somewhere sensible.
 
+**Each capture must be settled before recording starts, not just after donning.**
+`acPower` (perfusion's numerator) is a `BANK_TAU=10s` EMA, so any contact change —
+donning, tightening, an adjustment — injects an artifact that takes 30-60s of
+*undisturbed* contact to decay out, not 30-60s from when the strap went on. Watch the
+live `PerfIdx` line stop declining before starting `monitor-save`; a still-decaying
+number is not a baseline, it is that same disturbance's tail.
+
+**2026-09-02 attempt: the ordering above did not hold and no threshold was set.**
+Fully settled: unworn 0.17-0.70% (p90 0.56%), loose 0.24-0.58% (p90 0.56%, statistically
+indistinguishable from unworn — consistent with §3.5), good — 180s, BPM cleanly tracked
+68.9-81.4 throughout, IR rock-steady at 69.5k — **0.04-0.06%**. Good is *lower* than
+loose and unworn, inverting this section's assumption. A threshold picked by this
+recipe would reject genuine tracked pulses and accept unworn noise. Working theory,
+consistent with the perfusion/motion conflation in §2.1 and `-9r7`: the "elevated"
+unworn/loose numbers are residual settling energy in the cardiac AC band, not real
+perfusion, and true steady-state cardiac AC at `0x19` (5 mA) LED current is small
+relative to baseline for this wearer and site. `PI_TRUST_MIN` was left at the stale
+0.40 rather than set from this data — raw captures in `samples/unworn.log`,
+`samples/loose.log`, `samples/good.log`. Unresolved: whether raising LED current
+increases true modulation depth (as opposed to just DC level), or whether 0.04-0.06%
+is simply the right order of magnitude here and needs a threshold an order of
+magnitude below what this section anticipated.
+
 **Step 4 — a real regression capture.** Only after steps 1–3 pass:
 
 ```bash

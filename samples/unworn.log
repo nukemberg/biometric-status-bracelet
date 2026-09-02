@@ -1,0 +1,77 @@
+[Standby] Not worn | PerfIdx: 0.70% | RawGSR: 2495 | IR: 4166 (worn needs 5000-262143) | Temp: 21.07 C
+[Standby] Not worn | PerfIdx: 0.68% | RawGSR: 2493 | IR: 4201 (worn needs 5000-262143) | Temp: 21.06 C
+[Standby] Not worn | PerfIdx: 0.67% | RawGSR: 2493 | IR: 4216 (worn needs 5000-262143) | Temp: 21.06 C
+[Jitter] target 2000us | min 1903 mean 2000.0 max 2101 | overruns 0/5007
+[PPG] fifo 25.19 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.64% | RawGSR: 2495 | IR: 4232 (worn needs 5000-262143) | Temp: 21.05 C
+[Standby] Not worn | PerfIdx: 0.61% | RawGSR: 2495 | IR: 4243 (worn needs 5000-262143) | Temp: 21.06 C
+[Standby] Not worn | PerfIdx: 0.58% | RawGSR: 2494 | IR: 4246 (worn needs 5000-262143) | Temp: 21.05 C
+[Standby] Not worn | PerfIdx: 0.56% | RawGSR: 2493 | IR: 4260 (worn needs 5000-262143) | Temp: 21.05 C
+[Standby] Not worn | PerfIdx: 0.53% | RawGSR: 2495 | IR: 4263 (worn needs 5000-262143) | Temp: 21.05 C
+[Standby] Not worn | PerfIdx: 0.51% | RawGSR: 2489 | IR: 4275 (worn needs 5000-262143) | Temp: 21.04 C
+[Standby] Not worn | PerfIdx: 0.49% | RawGSR: 2493 | IR: 4280 (worn needs 5000-262143) | Temp: 21.04 C
+[Standby] Not worn | PerfIdx: 0.47% | RawGSR: 2495 | IR: 4293 (worn needs 5000-262143) | Temp: 21.04 C
+[Standby] Not worn | PerfIdx: 0.45% | RawGSR: 2494 | IR: 4302 (worn needs 5000-262143) | Temp: 21.03 C
+[Standby] Not worn | PerfIdx: 0.44% | RawGSR: 2493 | IR: 4314 (worn needs 5000-262143) | Temp: 21.03 C
+[Jitter] target 2000us | min 1928 mean 2000.0 max 2072 | overruns 0/5005
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.20 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.42% | RawGSR: 2494 | IR: 4325 (worn needs 5000-262143) | Temp: 21.03 C
+[Standby] Not worn | PerfIdx: 0.41% | RawGSR: 2493 | IR: 4342 (worn needs 5000-262143) | Temp: 21.02 C
+[Standby] Not worn | PerfIdx: 0.42% | RawGSR: 2495 | IR: 4364 (worn needs 5000-262143) | Temp: 21.03 C
+[Standby] Not worn | PerfIdx: 0.41% | RawGSR: 2493 | IR: 4377 (worn needs 5000-262143) | Temp: 21.01 C
+[Standby] Not worn | PerfIdx: 0.40% | RawGSR: 2495 | IR: 4388 (worn needs 5000-262143) | Temp: 21.01 C
+[Standby] Not worn | PerfIdx: 0.38% | RawGSR: 2495 | IR: 4394 (worn needs 5000-262143) | Temp: 21.01 C
+[Standby] Not worn | PerfIdx: 0.37% | RawGSR: 2495 | IR: 4408 (worn needs 5000-262143) | Temp: 21.00 C
+[Standby] Not worn | PerfIdx: 0.35% | RawGSR: 2493 | IR: 4406 (worn needs 5000-262143) | Temp: 21.01 C
+[Standby] Not worn | PerfIdx: 0.34% | RawGSR: 2493 | IR: 4424 (worn needs 5000-262143) | Temp: 21.00 C
+[Standby] Not worn | PerfIdx: 0.33% | RawGSR: 2493 | IR: 4428 (worn needs 5000-262143) | Temp: 21.00 C
+[Jitter] target 2000us | min 1925 mean 2000.0 max 2076 | overruns 0/5006
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.32% | RawGSR: 2493 | IR: 4440 (worn needs 5000-262143) | Temp: 21.00 C
+[Standby] Not worn | PerfIdx: 0.31% | RawGSR: 2495 | IR: 4440 (worn needs 5000-262143) | Temp: 20.99 C
+[Standby] Not worn | PerfIdx: 0.30% | RawGSR: 2494 | IR: 4454 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.31% | RawGSR: 2494 | IR: 4471 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.31% | RawGSR: 2493 | IR: 4482 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.30% | RawGSR: 2490 | IR: 4483 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.29% | RawGSR: 2493 | IR: 4493 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.28% | RawGSR: 2493 | IR: 4500 (worn needs 5000-262143) | Temp: 20.97 C
+[Standby] Not worn | PerfIdx: 0.27% | RawGSR: 2495 | IR: 4506 (worn needs 5000-262143) | Temp: 20.98 C
+[Standby] Not worn | PerfIdx: 0.28% | RawGSR: 2495 | IR: 4523 (worn needs 5000-262143) | Temp: 20.97 C
+[Jitter] target 2000us | min 1925 mean 2000.0 max 2076 | overruns 0/5006
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.20 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.28% | RawGSR: 2495 | IR: 4538 (worn needs 5000-262143) | Temp: 20.97 C
+[Standby] Not worn | PerfIdx: 0.27% | RawGSR: 2495 | IR: 4540 (worn needs 5000-262143) | Temp: 20.96 C
+[Standby] Not worn | PerfIdx: 0.27% | RawGSR: 2494 | IR: 4552 (worn needs 5000-262143) | Temp: 20.96 C
+[Standby] Not worn | PerfIdx: 0.26% | RawGSR: 2495 | IR: 4556 (worn needs 5000-262143) | Temp: 20.95 C
+[Standby] Not worn | PerfIdx: 0.25% | RawGSR: 2493 | IR: 4560 (worn needs 5000-262143) | Temp: 20.95 C
+[Standby] Not worn | PerfIdx: 0.24% | RawGSR: 2495 | IR: 4564 (worn needs 5000-262143) | Temp: 20.94 C
+[Standby] Not worn | PerfIdx: 0.24% | RawGSR: 2494 | IR: 4576 (worn needs 5000-262143) | Temp: 20.95 C
+[Standby] Not worn | PerfIdx: 0.23% | RawGSR: 2494 | IR: 4580 (worn needs 5000-262143) | Temp: 20.94 C
+[Standby] Not worn | PerfIdx: 0.22% | RawGSR: 2501 | IR: 4582 (worn needs 5000-262143) | Temp: 20.93 C
+[Standby] Not worn | PerfIdx: 0.22% | RawGSR: 2495 | IR: 4586 (worn needs 5000-262143) | Temp: 20.93 C
+[Jitter] target 2000us | min 1906 mean 2000.0 max 2097 | overruns 0/5006
+[PPG] fifo 25.19 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.21% | RawGSR: 2493 | IR: 4594 (worn needs 5000-262143) | Temp: 20.93 C
+[Standby] Not worn | PerfIdx: 0.20% | RawGSR: 2495 | IR: 4594 (worn needs 5000-262143) | Temp: 20.93 C
+[Standby] Not worn | PerfIdx: 0.20% | RawGSR: 2495 | IR: 4598 (worn needs 5000-262143) | Temp: 20.92 C
+[Standby] Not worn | PerfIdx: 0.19% | RawGSR: 2495 | IR: 4603 (worn needs 5000-262143) | Temp: 20.92 C
+[Standby] Not worn | PerfIdx: 0.19% | RawGSR: 2494 | IR: 4601 (worn needs 5000-262143) | Temp: 20.91 C
+[Standby] Not worn | PerfIdx: 0.19% | RawGSR: 2495 | IR: 4607 (worn needs 5000-262143) | Temp: 20.90 C
+[Standby] Not worn | PerfIdx: 0.19% | RawGSR: 2495 | IR: 4614 (worn needs 5000-262143) | Temp: 20.91 C
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2494 | IR: 4622 (worn needs 5000-262143) | Temp: 20.90 C
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2495 | IR: 4623 (worn needs 5000-262143) | Temp: 20.89 C
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2495 | IR: 4627 (worn needs 5000-262143) | Temp: 20.88 C
+[Jitter] target 2000us | min 1901 mean 2000.0 max 2100 | overruns 0/5005
+[PPG] fifo 25.19 Hz (dsp assumes 25)
+[PPG] int  25.20 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2504 | IR: 4634 (worn needs 5000-262143) | Temp: 20.88 C
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2495 | IR: 4639 (worn needs 5000-262143) | Temp: 20.86 C
+[Standby] Not worn | PerfIdx: 0.18% | RawGSR: 2494 | IR: 4648 (worn needs 5000-262143) | Temp: 20.88 C
+[Standby] Not worn | PerfIdx: 0.17% | RawGSR: 2495 | IR: 4650 (worn needs 5000-262143) | Temp: 20.87 C
+[Standby] Not worn | PerfIdx: 0.17% | RawGSR: 2502 | IR: 4647 (worn needs 5000-262143) | Temp: 20.85 C
+[Standby] Not worn | PerfIdx: 0.17% | RawGSR: 2494 | IR: 4651 (worn needs 5000-262143) | Temp: 20.85 C
