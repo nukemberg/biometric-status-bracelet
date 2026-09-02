@@ -1,0 +1,77 @@
+[Biometrics] Live BPM: 49.7 (conf 0.14) | GSR Excitement: 82.2% | Temp: 23.8 C | PerfIdx: 2.62% (trusted) | IR: 65781 | Mode: 0
+[Jitter] target 2000us | min 1944 mean 2000.0 max 2056 | overruns 0/5007
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 49.5 (conf 0.18) | GSR Excitement: 68.6% | Temp: 23.8 C | PerfIdx: 2.49% (trusted) | IR: 66523 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 54.9% | Temp: 23.8 C | PerfIdx: 2.36% (trusted) | IR: 66737 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 43.8% | Temp: 23.8 C | PerfIdx: 2.24% (trusted) | IR: 66697 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 35.1% | Temp: 23.9 C | PerfIdx: 2.13% (trusted) | IR: 66726 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 28.2% | Temp: 23.9 C | PerfIdx: 2.03% (trusted) | IR: 66759 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 23.2% | Temp: 23.9 C | PerfIdx: 1.93% (trusted) | IR: 66818 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 19.7% | Temp: 23.9 C | PerfIdx: 1.83% (trusted) | IR: 66742 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 17.1% | Temp: 23.9 C | PerfIdx: 1.74% (trusted) | IR: 66809 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 15.2% | Temp: 23.9 C | PerfIdx: 1.66% (trusted) | IR: 66887 | Mode: 0
+[Jitter] target 2000us | min 1931 mean 2000.0 max 2072 | overruns 0/5004
+[PPG] fifo 25.19 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 13.5% | Temp: 23.9 C | PerfIdx: 1.57% (trusted) | IR: 66941 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.16) | GSR Excitement: 12.0% | Temp: 23.9 C | PerfIdx: 1.49% (trusted) | IR: 66936 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 11.2% | Temp: 23.9 C | PerfIdx: 1.42% (trusted) | IR: 66924 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.16) | GSR Excitement: 14.3% | Temp: 23.9 C | PerfIdx: 1.35% (trusted) | IR: 66964 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 26.5% | Temp: 23.9 C | PerfIdx: 1.28% (trusted) | IR: 66901 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 29.2% | Temp: 23.9 C | PerfIdx: 1.22% (trusted) | IR: 66927 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.17) | GSR Excitement: 27.4% | Temp: 23.9 C | PerfIdx: 1.16% (trusted) | IR: 66960 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.16) | GSR Excitement: 23.7% | Temp: 23.9 C | PerfIdx: 1.10% (trusted) | IR: 66925 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.16) | GSR Excitement: 19.1% | Temp: 23.9 C | PerfIdx: 1.05% (trusted) | IR: 66992 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.15) | GSR Excitement: 15.2% | Temp: 23.9 C | PerfIdx: 0.99% (trusted) | IR: 67045 | Mode: 0
+[Jitter] target 2000us | min 1931 mean 2000.0 max 2072 | overruns 0/5005
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.20 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 49.4 (conf 0.16) | GSR Excitement: 12.1% | Temp: 23.9 C | PerfIdx: 0.95% (trusted) | IR: 67023 | Mode: 0
+[Biometrics] Live BPM: 49.6 (conf 0.14) | GSR Excitement: 10.4% | Temp: 24.0 C | PerfIdx: 0.90% (trusted) | IR: 67083 | Mode: 0
+[Biometrics] Live BPM: 49.5 (conf 0.15) | GSR Excitement: 9.7% | Temp: 24.0 C | PerfIdx: 0.85% (trusted) | IR: 67116 | Mode: 0
+[Biometrics] Live BPM: 51.3 (conf 0.16) | GSR Excitement: 8.8% | Temp: 24.0 C | PerfIdx: 0.81% (trusted) | IR: 67081 | Mode: 0
+[Biometrics] Live BPM: 58.7 (conf 0.17) | GSR Excitement: 7.9% | Temp: 24.0 C | PerfIdx: 0.77% (trusted) | IR: 67121 | Mode: 0
+[Biometrics] Live BPM: 66.6 (conf 0.19) | GSR Excitement: 7.4% | Temp: 24.0 C | PerfIdx: 0.74% (trusted) | IR: 67165 | Mode: 0
+[Biometrics] Live BPM: 74.7 (conf 0.22) | GSR Excitement: 15.2% | Temp: 24.0 C | PerfIdx: 0.70% (trusted) | IR: 67146 | Mode: 0
+[Biometrics] Live BPM: 78.4 (conf 0.24) | GSR Excitement: 28.8% | Temp: 24.0 C | PerfIdx: 0.66% (trusted) | IR: 67201 | Mode: 0
+[Biometrics] Live BPM: 78.4 (conf 0.28) | GSR Excitement: 28.4% | Temp: 24.0 C | PerfIdx: 0.63% (trusted) | IR: 67226 | Mode: 0
+[Biometrics] Live BPM: 78.3 (conf 0.33) | GSR Excitement: 25.8% | Temp: 24.0 C | PerfIdx: 0.60% (trusted) | IR: 67255 | Mode: 0
+[Jitter] target 2000us | min 1943 mean 2000.0 max 2053 | overruns 0/5006
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 78.2 (conf 0.35) | GSR Excitement: 21.6% | Temp: 24.0 C | PerfIdx: 0.57% (trusted) | IR: 67277 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.38) | GSR Excitement: 17.2% | Temp: 24.0 C | PerfIdx: 0.54% (trusted) | IR: 67293 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.44) | GSR Excitement: 13.3% | Temp: 24.0 C | PerfIdx: 0.52% (trusted) | IR: 67299 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.47) | GSR Excitement: 10.1% | Temp: 24.0 C | PerfIdx: 0.49% (trusted) | IR: 67283 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.51) | GSR Excitement: 7.7% | Temp: 24.0 C | PerfIdx: 0.47% (trusted) | IR: 67324 | Mode: 0
+[Biometrics] Live BPM: 78.3 (conf 0.44) | GSR Excitement: 5.9% | Temp: 24.0 C | PerfIdx: 0.44% (trusted) | IR: 67330 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.50) | GSR Excitement: 5.6% | Temp: 24.0 C | PerfIdx: 0.42% (trusted) | IR: 67315 | Mode: 0
+[Biometrics] Live BPM: 78.2 (conf 0.47) | GSR Excitement: 9.3% | Temp: 24.0 C | PerfIdx: 0.40% (trusted) | IR: 67397 | Mode: 0
+[Biometrics] Live BPM: 78.1 (conf 0.50) | GSR Excitement: 10.3% | Temp: 24.0 C | PerfIdx: 0.38% (SEARCHING) | IR: 67423 | Mode: 0
+[Biometrics] Live BPM: 77.9 (conf 0.41) | GSR Excitement: 10.4% | Temp: 24.0 C | PerfIdx: 0.37% (SEARCHING) | IR: 67451 | Mode: 0
+[Jitter] target 2000us | min 1852 mean 2000.0 max 2153 | overruns 0/5005
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.20 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 77.8 (conf 0.39) | GSR Excitement: 10.0% | Temp: 24.0 C | PerfIdx: 0.35% (SEARCHING) | IR: 67437 | Mode: 0
+[Biometrics] Live BPM: 77.6 (conf 0.37) | GSR Excitement: 8.8% | Temp: 24.0 C | PerfIdx: 0.33% (SEARCHING) | IR: 67441 | Mode: 0
+[Biometrics] Live BPM: 77.5 (conf 0.36) | GSR Excitement: 7.3% | Temp: 24.0 C | PerfIdx: 0.32% (SEARCHING) | IR: 67466 | Mode: 0
+[Biometrics] Live BPM: 76.2 (conf 0.31) | GSR Excitement: 6.3% | Temp: 24.0 C | PerfIdx: 0.30% (SEARCHING) | IR: 67439 | Mode: 0
+[Biometrics] Live BPM: 75.5 (conf 0.37) | GSR Excitement: 6.0% | Temp: 24.0 C | PerfIdx: 0.29% (SEARCHING) | IR: 67476 | Mode: 0
+[Biometrics] Live BPM: 75.2 (conf 0.42) | GSR Excitement: 7.6% | Temp: 24.0 C | PerfIdx: 0.27% (SEARCHING) | IR: 67509 | Mode: 0
+[Biometrics] Live BPM: 75.0 (conf 0.49) | GSR Excitement: 31.3% | Temp: 24.0 C | PerfIdx: 0.26% (SEARCHING) | IR: 67574 | Mode: 0
+[Biometrics] Live BPM: 75.0 (conf 0.53) | GSR Excitement: 38.7% | Temp: 24.0 C | PerfIdx: 0.25% (SEARCHING) | IR: 67526 | Mode: 0
+[Biometrics] Live BPM: 75.0 (conf 0.54) | GSR Excitement: 35.8% | Temp: 24.0 C | PerfIdx: 0.24% (SEARCHING) | IR: 67537 | Mode: 0
+[Biometrics] Live BPM: 75.1 (conf 0.56) | GSR Excitement: 30.1% | Temp: 24.0 C | PerfIdx: 0.23% (SEARCHING) | IR: 67592 | Mode: 0
+[Jitter] target 2000us | min 1825 mean 2000.0 max 2170 | overruns 0/5004
+[PPG] fifo 25.09 Hz (dsp assumes 25)
+[PPG] int  25.10 Hz (PPG_RDY edges on PIN_PPG_INT)
+[Biometrics] Live BPM: 75.2 (conf 0.56) | GSR Excitement: 23.8% | Temp: 24.1 C | PerfIdx: 0.22% (SEARCHING) | IR: 67546 | Mode: 0
+[Biometrics] Live BPM: 75.2 (conf 0.50) | GSR Excitement: 18.4% | Temp: 24.1 C | PerfIdx: 0.21% (SEARCHING) | IR: 67570 | Mode: 0
+[Biometrics] Live BPM: 75.3 (conf 0.49) | GSR Excitement: 14.0% | Temp: 24.1 C | PerfIdx: 0.20% (SEARCHING) | IR: 67625 | Mode: 0
+[Biometrics] Live BPM: 75.2 (conf 0.49) | GSR Excitement: 10.6% | Temp: 24.1 C | PerfIdx: 0.19% (SEARCHING) | IR: 67659 | Mode: 0
+[Biometrics] Live BPM: 75.8 (conf 0.07) | GSR Excitement: 18.8% | Temp: 24.1 C | PerfIdx: 0.28% (SEARCHING) | IR: 67027 | Mode: 0
+[Biometrics] Live BPM: 75.1 (conf 0.06) | GSR Excitement: 29.7% | Temp: 24.1 C | PerfIdx: 0.40% (trusted) | IR: 67177 | Mode: 0
+[Biometrics] Live BPM: 74.3 (conf 0.06) | GSR Excitement: 27.9% | Temp: 24.1 C | PerfIdx: 0.57% (trusted) | IR: 68463 | Mode: 0
+[Biometrics] Live BPM: 68.9 (conf 0.11) | GSR Excitement: 55.5% | Temp: 24.1 C | PerfIdx: 0.84% (trusted) | IR: 69873 | Mode: 0
+[Biometrics] Live BPM: 63.8 (conf 0.14) | GSR Excitement: 57.8% | Temp: 24.1 C | PerfIdx: 0.83% (trusted) | IR: 69812 | Mode: 0

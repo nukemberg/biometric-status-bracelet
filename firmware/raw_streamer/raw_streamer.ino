@@ -32,7 +32,7 @@
 #include <Wire.h>
 #include <max30102.h>
 
-//#define MCU_ESP32_S3
+#define MCU_ESP32_S3
 
 #ifdef MCU_ESP32_S3
   #define PIN_GSR     1
