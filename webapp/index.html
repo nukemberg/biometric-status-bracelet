@@ -18,11 +18,16 @@
   step) gets you a standalone window and a home-screen icon on Android Chrome. It does
   NOT make Web Bluetooth work on iOS: Safari doesn't implement the API at all, in a
   PWA/home-screen shell or otherwise, so an installed icon on iPhone opens a dashboard
-  that can never connect. No service worker on purpose -- this page always wants the
-  freshest JS against whatever protocol version the device speaks, and a cached app
-  shell serving stale decode logic against a newer firmware is exactly the silent
-  wrong-number failure mode ble_protocol.h exists to prevent.
+  that can never connect. sw.js caches the app shell network-first: it always tries a
+  live fetch before touching the cache, so a newer firmware always gets the matching
+  fresh decode logic when there's network. Cache is only a fallback for zero
+  connectivity (festival use), never served ahead of the network.
 -->
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+  }
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0E0D0C">
