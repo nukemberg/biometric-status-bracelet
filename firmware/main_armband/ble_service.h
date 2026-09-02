@@ -34,6 +34,10 @@ struct Handlers {
   void (*setStreams)(uint8_t mask) = nullptr;
   void (*resetBank)() = nullptr;
   void (*resetConfig)() = nullptr;
+  // Reboot into the ROM USB download mode (CMD_ENTER_BOOTLOADER). Null here means a
+  // build simply cannot be put into flash mode over the air, which is the right
+  // default for anything but a device that is hard to reach physically.
+  void (*enterBootloader)() = nullptr;
   // Config characteristic (-pmw). getConfig fills values[CFG_PARAM_COUNT] in
   // paramId order for a read; setConfigParam applies one live tunable and is
   // expected to persist it. Either may be null, in which case the corresponding

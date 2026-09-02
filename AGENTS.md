@@ -29,8 +29,35 @@ This repository uses `just` for task automation (compiling, flashing, monitoring
 Run `just` to see all available recipes. Common tasks:
 - `just build` (or `just compile`) — compile firmware
 - `just upload` — compile and flash
+- `just flash` — flash the existing build without recompiling
 - `just monitor` — stream serial output
 - `just test` — run protocol and wire-format validation tests
+
+### Flashing does not need the BOOT/RESET buttons
+
+`just flash` puts the board into download mode by itself: esptool toggles DTR/RTS over
+the S3's native USB CDC and the Arduino USB stack reboots into the bootloader. This is
+confirmed working with the board installed in the sleeve rig, where the buttons are not
+reachable. **Do not ask the user to press BOOT or RESET** as a first move — try
+`just flash` and read the actual error before assuming physical access is needed.
+
+If auto-reset ever fails while the firmware is still running and advertising, there is a
+software path to the same place:
+
+```bash
+tools/blectl.py bootloader --yes    # BLE command: reboot into ROM USB download mode
+just flash
+```
+
+The web app exposes the same thing as a "Flash mode" button in its Tuning panel. Both
+send `CMD_ENTER_BOOTLOADER` (0x08) with the mandatory magic byte 0xB0; the firmware sets
+`RTC_CNTL_FORCE_DOWNLOAD_BOOT` and restarts, and that flag survives only the one reset it
+triggers, so a plain power cycle boots the firmware again. Neither path helps if the
+firmware does not boot — that case still needs the buttons.
+
+The BLE fallback has a live caveat (`bd show biometric-status-bracelet-2po`): it is acted
+on in `loop()`, and `loop()` stalls while the USB cable is plugged in with no host
+reading the serial port, so send it before plugging in. `just flash` is unaffected.
 
 ## Non-Interactive Shell Commands
 

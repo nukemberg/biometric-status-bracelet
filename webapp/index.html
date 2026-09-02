@@ -307,6 +307,19 @@
 
   .wide { width: 100%; }
 
+  /* The only control that takes the bracelet off the air, so it is the only one
+     that gets a colour. Muted until armed, then unmistakable. */
+  .hint {
+    margin: 0.55rem 0 0;
+    font-size: 0.625rem; line-height: 1.6; color: var(--ink-dim);
+  }
+
+  .danger { color: var(--pulse-red); border-color: var(--ink-faint); }
+  .danger:hover:not(:disabled) { color: var(--pulse-red); border-color: var(--pulse-red); }
+  .danger[data-armed="true"] {
+    color: var(--bg); background: var(--pulse-red); border-color: var(--pulse-red);
+  }
+
   input[type="range"] {
     width: 100%; margin: 0; height: 1.75rem;
     -webkit-appearance: none; appearance: none; background: transparent;
@@ -460,6 +473,14 @@ inferred from the number.">
     <div class="control" style="padding-top:1.1rem">
       <button type="button" class="wide" id="resetConfig" disabled>Reset to defaults</button>
     </div>
+    <div class="control">
+      <button type="button" class="wide danger" id="bootloader" disabled>Flash mode</button>
+      <p class="hint" id="bootloaderHint">
+        Reboots the bracelet into USB download mode so it can be flashed without
+        reaching the BOOT and RESET buttons. It disconnects and stops responding until
+        you flash it or power-cycle it.
+      </p>
+    </div>
   </details>
 
   <details class="tuning" id="logPanel" hidden>
@@ -528,6 +549,8 @@ const CHR_LOG     = "a1b20008-5e8f-4d7a-9c31-0f2e6d4b8a70";
 const VITALS_LEN = 20;
 const CMD_SET_MODE = 0x01, CMD_SET_BRIGHTNESS = 0x02, CMD_RECALIBRATE_GSR = 0x03;
 const CMD_SET_STREAMS = 0x04, CMD_RESET_CONFIG = 0x06, CMD_DUMP_LOG = 0x07;
+// Firmware ignores this command unless the magic byte is exact -- see ble_protocol.h.
+const CMD_ENTER_BOOTLOADER = 0x08, BOOTLOADER_MAGIC = 0xB0;
 const LOG_DEPTH = 20;  // mirrors BLE_LOG_DEPTH in ble_protocol.h
 const STREAM_SIGNALS = 0x01, STREAM_SPECTRUM = 0x02;
 
@@ -1172,9 +1195,13 @@ function setLink(state, text) {
 function setControlsEnabled(on) {
   for (const el of document.querySelectorAll(
       "[data-mode], #brightness, #recal, #chartSignals, #chartSpectrum, " +
-      "#resetConfig, [data-cfg]")) {
+      "#resetConfig, #bootloader, [data-cfg]")) {
     el.disabled = !on;
   }
+  // A fresh connection starts from the safe state: whatever the flash-mode button
+  // was left saying (armed, or "in download mode" from the session that just ended)
+  // is stale the moment a device is on the other end again.
+  if (on) disarmBootloader();
 }
 
 async function send(cmd, arg) {
@@ -1351,6 +1378,39 @@ $("resetConfig").onclick = async () => {
   const b = $("resetConfig");
   b.textContent = "Reset";
   setTimeout(() => { b.textContent = "Reset to defaults"; }, 1600);
+};
+
+// Two clicks, not a confirm() dialog: the first arms, the second commits, and the
+// arming lapses on its own. A misplaced tap in a details panel should not be able to
+// end the session, but a modal is heavier than this decision deserves -- the cost of
+// getting it wrong is a power cycle, not lost data.
+let bootloaderArmTimer = null;
+function disarmBootloader() {
+  clearTimeout(bootloaderArmTimer);
+  bootloaderArmTimer = null;
+  const b = $("bootloader");
+  b.dataset.armed = "false";
+  b.textContent = "Flash mode";
+}
+
+$("bootloader").onclick = async () => {
+  const b = $("bootloader");
+  if (b.dataset.armed !== "true") {
+    b.dataset.armed = "true";
+    b.textContent = "Tap again to confirm";
+    bootloaderArmTimer = setTimeout(disarmBootloader, 4000);
+    return;
+  }
+  clearTimeout(bootloaderArmTimer);
+  bootloaderArmTimer = null;
+  await send(CMD_ENTER_BOOTLOADER, BOOTLOADER_MAGIC);
+  // The device reboots ~300 ms after the write lands, so the GATT disconnect that
+  // follows is expected, not a fault -- say so before the connection handler can
+  // report it as one.
+  b.textContent = "In download mode";
+  $("note").innerHTML =
+    "<b>Bracelet is in USB download mode.</b> Flash it now (<code>just flash</code>). " +
+    "It will drop the Bluetooth connection; a power cycle brings the firmware back.";
 };
 
 buildTuning();

@@ -796,7 +796,7 @@ error, which is the exact failure this library exists to prevent. Both widened t
 | Vitals | notify | 4 Hz | 20 B | bpm×10, confidence, arousal, perfusion×100, gsr_raw, **pulse_raw (u32)**, temp×100, flags (worn/strobe/mode), brightness, gsr_tonic |
 | Signals | notify | 5 Hz | 66 B | 5 batched 25 Hz samples: **pulse_filtered (i32×10)**, **pulse_raw (u32)**, gsr_phasic, gsr_raw + start timestamp |
 | Spectrum | notify | 1 Hz | 56 B | 48 log-scaled resonator bin powers + peak bin + BPM range |
-| Control | write | — | 2–3 B | set mode, set brightness, recalibrate GSR, set stream mask, reset bank, reset config, dump log |
+| Control | write | — | 2–3 B | set mode, set brightness, recalibrate GSR, set stream mask, reset bank, reset config, dump log, enter bootloader |
 | Config | read/write | — | var | `[paramId][float32]` writes; read returns all tunables packed |
 | Info | read | — | var | firmware version, build date, bin count |
 | Log | notify | on error / on demand | var | plain-ASCII `"<seconds>s <message>"`, no binary layout -- a debug aid, not the scientific data path |
@@ -814,6 +814,31 @@ Kept intentionally outside the versioned binary protocol -- it doesn't need
 
 The Spectrum characteristic exists specifically to watch harmonic capture (§2.3) happen
 live, which offline analysis could only infer.
+
+**`CMD_ENTER_BOOTLOADER` (0x08)** reboots the board into the ESP32-S3 ROM USB download
+mode, so a bracelet already installed in the sleeve rig can be re-flashed without
+physical access to the BOOT and RESET buttons. The firmware sets
+`RTC_CNTL_FORCE_DOWNLOAD_BOOT` and calls `esp_restart()`; that flag survives exactly the
+one reset it triggers, so the device enumerates as a bootloader on the native USB port
+and the *next* ordinary power cycle boots the firmware again. One-shot on purpose --
+losing button access must not also mean a board can get stranded in download mode.
+
+It is the only Control command that ends the session rather than changing a display, so
+it is the only one with a mandatory magic argument (`CMD_BOOTLOADER_MAGIC`, 0xB0): a
+truncated or corrupted write cannot land on it, and it is unreachable from a client that
+only speaks the one-byte command shape. The web app arms it with a second confirming tap
+before sending; `tools/blectl.py bootloader` prompts (or takes `--yes`). Both then tell
+you to flash, since the device is unreachable over BLE until you do.
+
+**Caveat, until `-2po` is fixed:** the command is dispatched on the NimBLE task but acted
+on in `loop()`, and `loop()` stalls whenever the USB cable is plugged in with no host
+reading the serial port. A device in that state accepts the write and does nothing,
+while still advertising and answering GATT reads -- it looks alive. Send it *before*
+plugging the cable in, or with a serial monitor attached. In practice this rarely
+matters: `just flash` auto-resets over CDC without any button press, so this command is
+the backup path, not the primary one. Before restarting, the firmware persists any pending config write (the
+debounced NVS save is up to two seconds away and there is no next frame) and blanks the
+strip, so "in download mode" looks different from a hung render loop.
 
 **Config persists to NVS**, with an explicit reset-to-defaults command exposed in the web
 app.

@@ -43,6 +43,11 @@ CMD_SET_STREAMS = 0x04
 CMD_RESET_BANK = 0x05
 CMD_RESET_CONFIG = 0x06
 CMD_DUMP_LOG = 0x07
+CMD_ENTER_BOOTLOADER = 0x08
+# CMD_ENTER_BOOTLOADER carries a mandatory magic argument: it is the one control
+# command that takes the device off the air, so the firmware rejects any write that
+# does not match exactly. See ble_protocol.h.
+CMD_BOOTLOADER_MAGIC = 0xB0
 
 STREAM_SIGNALS = 0x01
 STREAM_SPECTRUM = 0x02

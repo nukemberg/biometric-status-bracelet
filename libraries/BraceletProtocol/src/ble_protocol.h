@@ -80,7 +80,18 @@ enum BleCommand : uint8_t {
   CMD_RESET_BANK     = 0x05,   // no arg
   CMD_RESET_CONFIG   = 0x06,   // no arg -- restore compiled defaults
   CMD_DUMP_LOG       = 0x07,   // no arg -- replay the log ring buffer over BLE_CHR_LOG
+  CMD_ENTER_BOOTLOADER= 0x08,  // arg: CMD_BOOTLOADER_MAGIC -- reboot into ROM download mode
 };
+
+// CMD_ENTER_BOOTLOADER reboots the device into the ESP32-S3 ROM USB download mode so
+// it can be flashed without physical access to the BOOT/RESET buttons -- the case
+// once the board is installed in the sleeve rig. Every other command here is at worst
+// a display change a user can undo by pressing something else; this one takes the
+// bracelet off the air until it is re-flashed or power-cycled, so it carries a magic
+// argument. A truncated or corrupted write cannot land on it by accident, and the
+// mandatory second byte means the command is unreachable from a client that only
+// knows the one-byte command shape.
+#define CMD_BOOTLOADER_MAGIC 0xB0
 
 // Log ring buffer depth. Each entry is replayed as one plain-ASCII NOTIFY payload on
 // BLE_CHR_LOG -- "<seconds since boot>s <message>" -- rather than a binary record: this

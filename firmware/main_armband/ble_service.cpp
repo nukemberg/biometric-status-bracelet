@@ -112,6 +112,17 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
         if (handlers.resetConfig) handlers.resetConfig();
         break;
 
+      case CMD_ENTER_BOOTLOADER:
+        // The magic byte is the whole safety story for this command: it is the one
+        // control write that ends the session, so it must not be reachable by a
+        // stray or truncated packet. Reject quietly-but-loudly rather than guessing.
+        if (!hasArg || arg != CMD_BOOTLOADER_MAGIC) {
+          Serial.println(F("[BLE] enter-bootloader: bad magic, ignored"));
+          return;
+        }
+        if (handlers.enterBootloader) handlers.enterBootloader();
+        break;
+
       case CMD_DUMP_LOG: {
         // Oldest first, so the client's log view fills in chronological order
         // rather than needing to re-sort a batch of out-of-order notifications.

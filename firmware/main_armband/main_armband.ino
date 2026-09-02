@@ -44,6 +44,7 @@
 #include <max30102.h>
 #include <math.h>
 #include <esp_system.h>   // esp_reset_reason() -- was this boot a brownout? see -iee
+#include <soc/rtc_cntl_reg.h>  // RTC_CNTL_FORCE_DOWNLOAD_BOOT -- see enterBootloader()
 
 // ============================================================================
 // MCU HARDWARE SELECTION
@@ -169,6 +170,13 @@ volatile bool gsrResetRequest = false;
 volatile bool bankResetRequest = false;
 volatile bool configResetRequest = false;
 
+// Set from the NimBLE task by CMD_ENTER_BOOTLOADER, acted on at the top of loop().
+// Unlike the resets above this one is deferred for a different reason: it does not
+// touch the trackers at all, it ends the program. Doing that from inside a NimBLE
+// callback would tear down the stack from its own task, and would skip the tidy-up
+// (persist a pending config, blank the strip) that the render loop can do first.
+volatile bool bootloaderRequest = false;
+
 // A BLE config write (-pmw) arrives on the NimBLE task but is applied on the DSP
 // task, exactly like the reset requests above: applyConfig() touches the trackers
 // and a torn read mid-update would be a state nobody tested. Only one pending
@@ -263,6 +271,8 @@ void onSetBrightness(uint8_t value) {
 void onRecalibrateGsr() { gsrResetRequest = true; }
 
 void onResetBank() { bankResetRequest = true; }
+
+void onEnterBootloader() { bootloaderRequest = true; }
 
 void onResetConfig() {
   // Deferred to the DSP task loop rather than touching the trackers directly from
@@ -1137,6 +1147,7 @@ void setup() {
   h.setStreams = onSetStreams;
   h.resetBank = onResetBank;
   h.resetConfig = onResetConfig;
+  h.enterBootloader = onEnterBootloader;
   h.getConfig = onGetConfig;
   h.setConfigParam = onSetConfigParam;
   BleService::begin("Bracelet", h);
@@ -1170,7 +1181,54 @@ unsigned long lastVitalsPublish = 0;
 unsigned long lastSignalsPublish = 0;
 unsigned long lastSpectrumPublish = 0;
 
+// Reboots into the ESP32-S3 ROM download mode. RTC_CNTL_FORCE_DOWNLOAD_BOOT survives
+// the reset that follows it and nothing else, so the device comes up enumerated as a
+// bootloader on the native USB port -- esptool can flash it with no BOOT/RESET press
+// -- and the next ordinary power cycle boots this firmware again. That one-shot
+// behaviour is the point: a board sewn into the sleeve rig has no reachable buttons,
+// but it must not be left stuck in download mode either if the flash never happens.
+//
+// This is a one-way door for the running program: it does not return.
+//
+// Requires the render loop to be running, which is not a given: the firmware stalls
+// in loop() whenever the USB cable is plugged in and no host has the port open (see
+// -2po), and a stalled loop never polls bootloaderRequest. NimBLE keeps advertising
+// from its own task throughout, so a device in that state accepts the command and
+// then does nothing, looking alive the whole time. Send this BEFORE plugging the
+// cable in, or with a serial monitor attached, until -2po is fixed.
+static void enterDownloadMode() {
+  // Announced first, before any of the tidy-up below: the ring-buffer entry is the
+  // only record a client can still retrieve if something here fails to complete.
+  BleService::log("[boot] entering download mode");
+
+  // Anything the user just changed would otherwise be lost -- the debounced save on
+  // the DSP task is up to two seconds away, and there is no next frame.
+  if (configDirty) {
+    configDirty = false;
+    ConfigStore::save(cfg);
+  }
+  // The ROM bootloader does not drive the strip, so whatever pattern is on it now
+  // would freeze there. Blank it so "in download mode" is visibly distinct from
+  // "running", rather than looking like a hung render loop.
+  FastLED.clear();
+  FastLED.show();
+
+  // No Serial.flush() here: with the cable plugged in and no host reading the port,
+  // there is nothing to drain the CDC buffer into and the wait would have no bound.
+  // The delay below is what actually matters -- long enough for the log NOTIFY to
+  // leave the radio, and for the CDC buffer to drain if a host IS reading.
+  delay(300);
+
+  REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+  esp_restart();
+}
+
 void loop() {
+  if (bootloaderRequest) {
+    bootloaderRequest = false;
+    enterDownloadMode();   // does not return
+  }
+
   unsigned long now = millis();
   float dt = (now - lastFrameMs) / 1000.0f;
   lastFrameMs = now;

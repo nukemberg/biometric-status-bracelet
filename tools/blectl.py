@@ -25,6 +25,7 @@ Examples:
     tools/blectl.py config reset
     tools/blectl.py log
     tools/blectl.py log --seconds 30
+    tools/blectl.py bootloader          # reboot into USB download mode, then: just flash
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import bracelet_protocol as proto  # noqa: E402
 from bleak import BleakClient, BleakScanner  # noqa: E402
+from bleak.exc import BleakError  # noqa: E402
 
 DEVICE_NAME = "Bracelet"
 
@@ -371,6 +373,51 @@ async def cmd_cmd(args) -> int:
     return 0
 
 
+async def cmd_bootloader(args) -> int:
+    """Reboot the bracelet into the ESP32-S3 ROM USB download mode.
+
+    For a board already installed in the sleeve rig, where the BOOT and RESET buttons
+    are not reachable. The firmware sets RTC_CNTL_FORCE_DOWNLOAD_BOOT and restarts;
+    that flag survives only the reset it triggers, so the device comes up as a
+    bootloader on the native USB port and the next ordinary power cycle boots the
+    firmware again.
+
+    Deliberately NOT in CMDS: every command there is a display change the user can undo
+    by sending another one, whereas this ends the session, so it gets its own
+    confirmation rather than riding the generic `cmd` path with a magic byte typed by
+    hand as a positional argument.
+    """
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("bootloader needs --yes when stdin is not a terminal",
+                  file=sys.stderr)
+            return 2
+        reply = input("Reboot the bracelet into USB download mode? [y/N] ")
+        if reply.strip().lower() not in ("y", "yes"):
+            print("aborted", file=sys.stderr)
+            return 1
+
+    dev = await find_device(args.name, args.timeout)
+    if dev is None:
+        print("bracelet not found", file=sys.stderr)
+        return 1
+
+    payload = proto.encode_control(
+        proto.CMD_ENTER_BOOTLOADER, proto.CMD_BOOTLOADER_MAGIC)
+    try:
+        async with BleakClient(dev) as c:
+            await c.write_gatt_char(proto.CHR_CONTROL, payload, response=True)
+    except BleakError as e:
+        # The device restarts ~300 ms after the write lands, so a disconnect racing
+        # the context exit is the expected ending here, not a failure. The write
+        # itself already succeeded or it would have raised before this point.
+        print(f"# disconnected during teardown (expected): {e}", file=sys.stderr)
+
+    print("bracelet is in USB download mode -- flash now, e.g. `just flash`")
+    print("a power cycle without flashing brings the current firmware back")
+    return 0
+
+
 async def cmd_config(args) -> int:
     """Read all tunables, set one by name, or reset to compiled defaults.
 
@@ -486,13 +533,18 @@ def main() -> int:
     cf_set.add_argument("value", type=float)
     cf_sub.add_parser("reset", parents=[common], help="restore compiled defaults")
 
+    bl = sub.add_parser("bootloader", parents=[common],
+                        help="reboot into USB download mode so the board can be flashed")
+    bl.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
     args = ap.parse_args()
 
     if args.cmd == "selftest":
         return cmd_selftest(args)
     handler = {"scan": cmd_scan, "info": cmd_info, "monitor": cmd_monitor,
                "stream": cmd_stream, "spectrum": cmd_spectrum, "cmd": cmd_cmd,
-               "config": cmd_config, "log": cmd_log}[args.cmd]
+               "config": cmd_config, "log": cmd_log,
+               "bootloader": cmd_bootloader}[args.cmd]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
