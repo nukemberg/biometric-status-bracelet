@@ -1066,6 +1066,20 @@ static bool tryInitSensors() {
 // ============================================================================
 void setup() {
   Serial.begin(115200);
+  // Serial logging must never be able to stall the render loop (-2po). On the S3's
+  // native USB CDC, write() spins on tud_cdc_n_write_available() for up to
+  // tx_timeout_ms (250 ms by default) *per call* whenever the host has the port open
+  // but is not draining it. That state is easy to reach and not obviously broken from
+  // outside: closing a monitor that cleared HUPCL leaves DTR asserted, so the device
+  // still believes a host is listening while nothing reads the buffer. The result was
+  // a frozen strip and no vitals, on a device that kept advertising and answering GATT
+  // reads from the NimBLE task -- it looked alive.
+  //
+  // A timeout of 0 makes write() drop whatever does not fit and return immediately.
+  // That trades complete logs for a loop that always runs, which is the right way
+  // round: the serial log is a debug aid, the render loop is the product. Nothing is
+  // actually lost while a host IS reading, because then there is buffer space.
+  Serial.setTxTimeoutMs(0);
   delay(1000);
 
   // First line out, before anything else can obscure it. A BROWNOUT here means the
@@ -1190,12 +1204,10 @@ unsigned long lastSpectrumPublish = 0;
 //
 // This is a one-way door for the running program: it does not return.
 //
-// Requires the render loop to be running, which is not a given: the firmware stalls
-// in loop() whenever the USB cable is plugged in and no host has the port open (see
-// -2po), and a stalled loop never polls bootloaderRequest. NimBLE keeps advertising
-// from its own task throughout, so a device in that state accepts the command and
-// then does nothing, looking alive the whole time. Send this BEFORE plugging the
-// cable in, or with a serial monitor attached, until -2po is fixed.
+// Acted on in loop(), so it needs the render loop to be running. That was briefly not
+// a given: a blocking USB CDC write could stall the loop and swallow this command
+// silently while NimBLE kept advertising from its own task. Fixed in -2po by making
+// serial writes non-blocking.
 static void enterDownloadMode() {
   // Announced first, before any of the tidy-up below: the ring-buffer entry is the
   // only record a client can still retrieve if something here fails to complete.

@@ -55,10 +55,6 @@ send `CMD_ENTER_BOOTLOADER` (0x08) with the mandatory magic byte 0xB0; the firmw
 triggers, so a plain power cycle boots the firmware again. Neither path helps if the
 firmware does not boot — that case still needs the buttons.
 
-The BLE fallback has a live caveat (`bd show biometric-status-bracelet-2po`): it is acted
-on in `loop()`, and `loop()` stalls while the USB cable is plugged in with no host
-reading the serial port, so send it before plugging in. `just flash` is unaffected.
-
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.

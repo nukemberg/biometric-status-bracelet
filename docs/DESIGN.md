@@ -828,15 +828,16 @@ it is the only one with a mandatory magic argument (`CMD_BOOTLOADER_MAGIC`, 0xB0
 truncated or corrupted write cannot land on it, and it is unreachable from a client that
 only speaks the one-byte command shape. The web app arms it with a second confirming tap
 before sending; `tools/blectl.py bootloader` prompts (or takes `--yes`). Both then tell
-you to flash, since the device is unreachable over BLE until you do.
+you to flash, since the device is unreachable over BLE until you do. In practice
+`just flash` auto-resets over CDC without any button press, so this command is the
+backup path rather than the primary one.
 
-**Caveat, until `-2po` is fixed:** the command is dispatched on the NimBLE task but acted
-on in `loop()`, and `loop()` stalls whenever the USB cable is plugged in with no host
-reading the serial port. A device in that state accepts the write and does nothing,
-while still advertising and answering GATT reads -- it looks alive. Send it *before*
-plugging the cable in, or with a serial monitor attached. In practice this rarely
-matters: `just flash` auto-resets over CDC without any button press, so this command is
-the backup path, not the primary one. Before restarting, the firmware persists any pending config write (the
+The command is dispatched on the NimBLE task but acted on in `loop()`, so it depends on
+the render loop actually running. That is guaranteed only because serial writes are
+non-blocking (`Serial.setTxTimeoutMs(0)`, -2po): with the default 250 ms timeout, a
+plugged-in cable whose port nobody was draining stalled `loop()` and swallowed this
+command silently, while NimBLE went on advertising and answering reads from its own
+task -- the device looked alive and simply ignored the command. Before restarting, the firmware persists any pending config write (the
 debounced NVS save is up to two seconds away and there is no next frame) and blanks the
 strip, so "in download mode" looks different from a hung render loop.
 
