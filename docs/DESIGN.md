@@ -707,17 +707,29 @@ and `-6y4` becomes tractable.
 | File | What it is | Use |
 |---|---|---|
 | `samples/synthetic.csv` | 60 s generated, 64 BPM injected, deterministic | **Current parity fixture.** No signal-quality meaning |
+| `samples/raw_wrist_65bpm_still.csv` | 60 s **MAX30102** `raw_streamer` capture, worn, deliberately still, ground truth 65 BPM by manual radial count | First real MAX30102 regression case. BPM tracked ground truth throughout (median 65.6, range 52.3-69.6) |
+| `samples/raw_wrist_73bpm.csv` | 60 s **MAX30102** `raw_streamer` capture, worn, ground truth 73 BPM, **not still** (talking/typing during capture) | Motion-artifact reproduction for `-9r7`: tracker starts correct then harmonic-locks to ~2x. Not a clean regression case |
+| `samples/wrist_max30102_80bpm.log` | 60 s **MAX30102**, `main_armband`'s own pretty-printed serial output (not raw_streamer format), ground truth ~80 BPM | Validation evidence only — steady-state BPM (76-78) agreed with the count. Does not parse with `dsp_v2_sim.py` |
 | `samples/bio4.csv` | 226 s raw 500 Hz **analog PPG**, good contact, ground truth 64 BPM | Retired — GSR column still valid |
 | `samples/bio2.log` | 150 s raw 500 Hz **analog PPG**, poor contact, SNR < 1, ~88 BPM | Retired — GSR column still valid |
 | `samples/bio3.csv` | 204 s of on-device `dsp_v2` output (BPM, confidence, phase, arousal, tonic) | Retired for pulse; arousal/tonic still valid |
 
-**There is currently no MAX30102 wrist capture.** The three `bio*` files are analog
-front-end recordings; their pulse columns are readings of a sensor the bracelet no longer
-has, and their three-column format no longer parses — `dsp_v2_sim.py` rejects them with
-an explicit message rather than reinterpreting `RawPulse` as an IR channel, which would
-have produced a full set of plausible numbers from the wrong hardware. They are kept
-because their **GSR** columns are still a valid regression case for a channel nothing
-changed about, and because §2 cites them.
+The three `bio*` files are analog front-end recordings; their pulse columns are readings
+of a sensor the bracelet no longer has, and their three-column format no longer parses —
+`dsp_v2_sim.py` rejects them with an explicit message rather than reinterpreting
+`RawPulse` as an IR channel, which would have produced a full set of plausible numbers
+from the wrong hardware. They are kept because their **GSR** columns are still a valid
+regression case for a channel nothing changed about, and because §2 cites them.
+
+**`raw_wrist_73bpm.csv`'s harmonic lock is not a resonator bug.** Two spectral fixes
+were tried against it (subharmonic-power guard; sustained-monotonic-slew freeze, dated
+2026-09-02) and neither held — by mid-capture the 2x bin's own power genuinely exceeded
+the true-rate bin's. `raw_wrist_65bpm_still.csv`, captured the same session under
+identical hardware but genuinely still, tracked ground truth cleanly with no runaway.
+The 2x lock is motion artifact outcompeting cardiac signal in raw power, which a single
+PPG channel with no independent motion reference cannot safely reject by amplitude or
+spectral shape alone without also risking rejection of real fast-HR transitions — that
+is what the IMU (`-00y`, `-xbr.1`) is for. See `-9r7` for the full investigation.
 
 Current raw capture format is `Timestamp_ms,RawIr,RawGSR,IrNew`. `IrNew=1` marks rows
 carrying a genuinely new FIFO sample; on `IrNew=0` rows `RawIr` is `0` and must be
