@@ -46,6 +46,12 @@ BPM_MIN = 40.0
 BPM_MAX = 190.0
 N_BINS = 48
 BANK_TAU = 10.0
+
+# acPower (perfusion's numerator) used to share BANK_TAU with the resonator bank; split
+# 2026-09-02 because the two want opposite things -- the bank needs a long time constant
+# for frequency resolution, perfusion just wants to settle quickly after a contact
+# disturbance. See dsp.h for the full rationale. Mirrors dsp.h's PERF_TAU.
+PERF_TAU = 5.0
 RENORM_INTERVAL = 256  # rotator renormalisation period, in samples
 
 # BPM output shaping.
@@ -108,11 +114,13 @@ class PulseTracker:
         self.a_lp = onepole_alpha(LP_HZ)
         self.a_energy = ema_alpha(ENERGY_TAU)
         self.a_bank = ema_alpha(BANK_TAU)
+        self.a_perf = ema_alpha(PERF_TAU)
 
         self.baseline = None
         self.lp1 = 0.0
         self.lp2 = 0.0
         self.energy = 0.0
+        self.ac_power = 0.0
 
         # Bin centres, linear in BPM.
         self.bpms = [
@@ -145,6 +153,7 @@ class PulseTracker:
         self.filtered = y
 
         self.energy += self.a_energy * (y * y - self.energy)
+        self.ac_power += self.a_perf * (y * y - self.ac_power)
 
         for k in range(N_BINS):
             r = self.rot[k] * self.step[k]
@@ -161,6 +170,12 @@ class PulseTracker:
 
         return y
 
+    def perfusion(self):
+        """Cardiac AC as a percentage of DC level. Mirrors dsp.h's perfusion()."""
+        if self.baseline is None or self.baseline < 1.0:
+            return 0.0
+        return 100.0 * 2.83 * math.sqrt(self.ac_power) / self.baseline
+
     def update_filtered(self, y):
         """Feed a sample that has ALREADY been through the baseline/lowpass chain --
         the pulse_filtered field of a BLE Signals packet, computed on-device by this
@@ -172,6 +187,7 @@ class PulseTracker:
         """
         self.filtered = y
         self.energy += self.a_energy * (y * y - self.energy)
+        self.ac_power += self.a_perf * (y * y - self.ac_power)
         for k in range(N_BINS):
             r = self.rot[k] * self.step[k]
             self.rot[k] = r

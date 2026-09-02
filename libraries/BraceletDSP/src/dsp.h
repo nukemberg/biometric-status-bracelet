@@ -41,6 +41,18 @@
 #define BPM_MAX         190.0f  // dancing; do not narrow this range
 #define N_BINS          48
 #define BANK_TAU        10.0f
+
+// acPower (perfusion's numerator) used to share BANK_TAU with the resonator bank, but
+// the two want opposite things: the bank needs a long time constant for frequency
+// resolution (resolution ~1/(2*pi*tau); shortening it blurs neighboring bins together,
+// which is exactly wrong when trying to separate a fundamental from its harmonic), while
+// perfusion just wants to settle quickly after a contact disturbance so field
+// calibration doesn't need 30-60s of stillness per capture (2026-09-02 field session).
+// Split so each can be tuned independently -- verified against samples/raw_wrist_73bpm.csv
+// and samples/raw_wrist_65bpm_still.csv that decoupling does not change BPM/confidence at
+// all (acPower no longer feeds the bank), only how fast PerfIdx settles. 5s roughly halves
+// settle time vs the old shared 10s without the twitchiness seen at 2-3s.
+#define PERF_TAU        5.0f
 #define RENORM_INTERVAL 256
 
 #define SLEW_BPM_PER_S  8.0f
@@ -220,7 +232,7 @@ struct BraceletConfig {
 // PPG RESONATOR BANK (rate + confidence + beat phase from one structure)
 // ============================================================================
 struct PulseTracker {
-  float aHP, aLP, aBank;
+  float aHP, aLP, aBank, aPerf;
   float baseline, lp1, lp2, filtered;
   bool primed;
 
@@ -268,6 +280,7 @@ struct PulseTracker {
     aHP = onepoleAlpha(HP_HZ);
     aLP = onepoleAlpha(LP_HZ);
     aBank = emaAlpha(BANK_TAU);
+    aPerf = emaAlpha(PERF_TAU);
     baseline = lp1 = lp2 = filtered = 0.0f;
     acPower = 0.0f;
     primed = false;
@@ -298,7 +311,7 @@ struct PulseTracker {
     lp2 += aLP * (lp1 - lp2);
     float y = lp2;
     filtered = y;
-    acPower += aBank * (y * y - acPower);   // slow envelope for the perfusion index
+    acPower += aPerf * (y * y - acPower);   // envelope for the perfusion index
 
     for (int k = 0; k < N_BINS; k++) {
       float re = rotRe[k] * stepRe[k] - rotIm[k] * stepIm[k];
