@@ -184,27 +184,33 @@ class PulseTracker:
                     self.rot[k] /= m
 
     def estimate(self, dt_s):
-        """Called at render rate, not per sample. Updates bpm/confidence/phase."""
-        best = 0
+        """Called at render rate, not per sample. Updates bpm/confidence/phase.
+
+        Search excludes bins 0 and N_BINS-1 (the BPM_MIN/BPM_MAX edges), mirroring
+        dsp.h's PulseTracker::estimate(). On-skin captures 2026-09-02 repeatedly pinned
+        to bin 0 (40 BPM) at low confidence with no real signal there; an edge bin also
+        has no neighbor on one side, so the parabolic interpolation below was already
+        unsafe for it.
+        """
+        best = 1
         best_p = -1.0
         total_p = 0.0
         for k in range(N_BINS):
             p = self.res[k].real ** 2 + self.res[k].imag ** 2
             total_p += p
-            if p > best_p:
+            if 0 < k < N_BINS - 1 and p > best_p:
                 best_p = p
                 best = k
 
         # Parabolic interpolation on the power peak for sub-bin resolution.
         raw_bpm = self.bpms[best]
-        if 0 < best < N_BINS - 1:
-            lo = self.res[best - 1].real ** 2 + self.res[best - 1].imag ** 2
-            hi = self.res[best + 1].real ** 2 + self.res[best + 1].imag ** 2
-            denom = lo - 2.0 * best_p + hi
-            if abs(denom) > 1e-12:
-                shift = 0.5 * (lo - hi) / denom
-                shift = max(-1.0, min(1.0, shift))
-                raw_bpm += shift * (self.bpms[1] - self.bpms[0])
+        lo = self.res[best - 1].real ** 2 + self.res[best - 1].imag ** 2
+        hi = self.res[best + 1].real ** 2 + self.res[best + 1].imag ** 2
+        denom = lo - 2.0 * best_p + hi
+        if abs(denom) > 1e-12:
+            shift = 0.5 * (lo - hi) / denom
+            shift = max(-1.0, min(1.0, shift))
+            raw_bpm += shift * (self.bpms[1] - self.bpms[0])
 
         # Peak share of total bank power. Scale-free and bounded: flat noise across
         # the bank gives 1/N_BINS, a dominant rhythm gives much more.

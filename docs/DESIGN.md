@@ -558,30 +558,29 @@ real contact transient that saturates arousal on *both* sides, so the two agreed
 
 ### 4.1 On-wrist GSR recalibration
 
-GSR is the one part of the pipeline that cannot be settled offline: both thresholds that
-matter — the wear window and the arousal auto-range floor — depend on the electrodes, the
-skin, and how tightly the band is strapped. Two of the three parameters below are
-runtime-tunable over BLE, so most of this needs no reflash.
+**Superseded 2026-09-02 (-6y4): the wear gate no longer uses GSR.** `gsrWornMin` /
+`gsrWornMax` and the `gsr_worn_min` / `gsr_worn_max` config params are gone — the wire
+ids (0x06/0x07) are reused as `ir_worn_min` / `ir_worn_max` instead. Below is kept as
+history for *why*: an unworn GSR electrode is a floating analog input with no stable
+disconnected signature (the unworn cluster measured ~2400 in one session and ~3530 in
+another, on the same electrodes), so no threshold on it can be trusted across sessions.
+See §4.2 step 5 for the replacement — PPG IR DC, which is gated by contact rather than
+by whatever the floating leads happen to be near.
 
-**Step 1 — wear window (`gsrWornMin` / `gsrWornMax`).** Runtime-tunable.
+GSR is still read and still drives the arousal auto-range floor (§3.5); only the wear
+decision moved off it.
+
+Historical procedure (no longer applicable to wear gating):
 
 ```bash
 tools/blectl.py monitor --seconds 30 --csv unworn.csv   # bracelet on the bench
 tools/blectl.py monitor --seconds 30 --csv worn.csv     # bracelet strapped on
 ```
 
-Read `gsr_raw` from each. Expect two well-separated clusters — worn is the *lower* one
-(skin conductance pulls the Grove output down). Latest hardware: worn 1000–1500, unworn
-~2400. Set the ceiling between them, nearer the unworn side:
-
-```bash
-tools/blectl.py config set gsr_worn_max 2100
-```
-
-The value persists in NVS. Confirm with `blectl config get`. Caveat from -6y4: an unworn
-sensor is a floating input, so the unworn cluster moves between sessions and this
-threshold is a re-measurement, not a fix. If the two clusters overlap, stop — that is the
-IMU-gate problem (-00y), not a threshold problem.
+`gsr_raw` gave two clusters — worn is the *lower* one (skin conductance pulls the Grove
+output down). Latest hardware before the switch: worn 1000–1500, unworn ~2400. That
+ceiling was re-measured every session rather than fixed, which is exactly the
+instability -6y4 tracks.
 
 **Step 2 — resting baseline.** Strapped on, sitting still, no talking, 3 minutes:
 

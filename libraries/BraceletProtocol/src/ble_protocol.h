@@ -110,8 +110,8 @@ enum BleConfigParam : uint8_t {
   CFG_HUE_AT_LO    = 0x03,
   CFG_HUE_AT_HI    = 0x04,
   CFG_PI_TRUST_MIN = 0x05,
-  CFG_GSR_WORN_MIN = 0x06,
-  CFG_GSR_WORN_MAX = 0x07,
+  CFG_IR_WORN_MIN  = 0x06,   // was CFG_GSR_WORN_MIN; wire id unchanged, wear gate is now PPG IR (-6y4)
+  CFG_IR_WORN_MAX  = 0x07,   // was CFG_GSR_WORN_MAX
   CFG_CONF_GATE    = 0x08,
   CFG_CONF_REF     = 0x09,
   CFG_SLEW_BPM_S   = 0x0A,

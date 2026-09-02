@@ -58,8 +58,8 @@ CONFIG_PARAMS = {
     "hue_at_lo": 0x03,
     "hue_at_hi": 0x04,
     "pi_trust_min": 0x05,
-    "gsr_worn_min": 0x06,
-    "gsr_worn_max": 0x07,
+    "ir_worn_min": 0x06,
+    "ir_worn_max": 0x07,
     "conf_gate": 0x08,
     "conf_ref": 0x09,
     "slew_bpm_s": 0x0A,
@@ -275,8 +275,8 @@ FIXTURE_CONFIG_READ = (
     + bytes([0x03]) + struct.pack("<f", 3.0)    # hue_at_lo
     + bytes([0x04]) + struct.pack("<f", 4.0)    # hue_at_hi
     + bytes([0x05]) + struct.pack("<f", 0.25)   # pi_trust_min
-    + bytes([0x06]) + struct.pack("<f", 100.0)  # gsr_worn_min
-    + bytes([0x07]) + struct.pack("<f", 4000.0) # gsr_worn_max
+    + bytes([0x06]) + struct.pack("<f", 100.0)  # ir_worn_min
+    + bytes([0x07]) + struct.pack("<f", 4000.0) # ir_worn_max
     + bytes([0x08]) + struct.pack("<f", 0.5)    # conf_gate
     + bytes([0x09]) + struct.pack("<f", 0.9)    # conf_ref
     + bytes([0x0A]) + struct.pack("<f", 8.0)    # slew_bpm_s
@@ -332,7 +332,7 @@ def selftest() -> int:
     cfg = decode_config_read(FIXTURE_CONFIG_READ)
     check("config read hue_bpm_lo", cfg["hue_bpm_lo"], 1.0)
     check("config read pi_trust_min", cfg["pi_trust_min"], 0.25)
-    check("config read gsr_worn_max", cfg["gsr_worn_max"], 4000.0)
+    check("config read ir_worn_max", cfg["ir_worn_max"], 4000.0)
     check("config read slew_bpm_s", cfg["slew_bpm_s"], 8.0)
     check("config read record count", len(cfg), CONFIG_PARAM_COUNT)
 

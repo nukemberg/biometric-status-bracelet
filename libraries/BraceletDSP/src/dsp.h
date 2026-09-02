@@ -92,22 +92,29 @@
 //     bio2.log  poor contact, worn   median 0.180  (p10 0.151, p90 0.306)
 //     bench     nothing attached     0.17 - 0.20
 //
-// Poor-but-worn and not-worn are indistinguishable. No threshold separates them, so
-// perfusion cannot gate wear: any value that rejects an empty sensor also blanks the
-// panel on a real wearer with mediocre contact. An earlier PI_WORN_MIN of 0.15 was
-// derived from a *different* formula (scipy band-pass p2p / mean) and sat below the
-// unworn floor, so the PPG half of the gate never rejected anything.
+// Poor-but-worn and not-worn are indistinguishable on perfusion alone. No threshold
+// separates them, so perfusion cannot gate wear: any value that rejects an empty
+// sensor also blanks the panel on a real wearer with mediocre contact. An earlier
+// PI_WORN_MIN of 0.15 was derived from a *different* formula (scipy band-pass p2p /
+// mean) and sat below the unworn floor, so the PPG half of the gate never rejected
+// anything.
 //
-// GSR separates cleanly and does the gating alone: worn 1000-1509, unworn ~2400 on
-// the current electrodes (earlier captures showed 3507-4095), nothing in between.
-// The old 3000 ceiling accepted that ~2400 unworn reading as a wrist; 2100 splits
-// the two populations. Both bounds are runtime-configurable via gsrWornMin/Max.
+// GSR does NOT gate wear (-6y4): an unworn sensor is a floating analog input, so its
+// reading depends on what the leads are near rather than on contact. Two sessions on
+// the same electrodes produced unworn readings of 2400 and 3530 -- not a stable
+// "disconnected" signature to threshold against, however the split point is chosen.
+//
+// PPG IR DC gates wear instead. Off-skin, the LED sees only ambient + a few thousand
+// counts of internal offset; on-skin it sees the tuned operating point (~20k-150k,
+// DESIGN.md 4.2). On-skin measurement 2026-09-02: off-wrist ~2105, worn ~80000 at the
+// retuned LED current -- a >35x gap, not a few-hundred-count split. Both bounds are
+// runtime-configurable via irWornMin/Max.
 //
 // Confidence is deliberately used for neither: an unworn board was observed reporting
 // confidence 0.29, as high as a good worn signal, because the bank locks onto noise
 // just as happily as onto a pulse.
-#define GSR_WORN_MIN    500       // below this the pin is shorted or unpowered
-#define GSR_WORN_MAX    2100      // above this the electrodes are open
+#define PPG_IR_WORN_MIN   5000       // below this: off skin, or LED current starved
+#define PPG_IR_WORN_MAX   262143     // 18-bit full scale; clipping is still worn contact
 
 // Above this the cardiac signal is strong enough to believe the rate. Below it the
 // device still knows it is worn -- GSR says so -- but the pulse segment shows a
@@ -199,8 +206,8 @@ struct BraceletConfig {
   float hueAtHi    = -27.0f;
 
   float piTrustMin  = PI_TRUST_MIN;
-  float gsrWornMin  = (float)GSR_WORN_MIN;
-  float gsrWornMax  = (float)GSR_WORN_MAX;
+  float irWornMin   = (float)PPG_IR_WORN_MIN;
+  float irWornMax   = (float)PPG_IR_WORN_MAX;
   float confGate    = CONF_GATE;
   float confRef     = CONF_REF;
   float slewBpmPerS = SLEW_BPM_PER_S;
@@ -323,16 +330,21 @@ struct PulseTracker {
   // Render-rate work, not per-sample: one atan2 and one pass over the bank,
   // comparing squared magnitudes so the search needs no sqrt.
   void estimate(float dtSeconds) {
-    int best = 0;
+    // Search excludes bins 0 and N_BINS-1 (the BPM_MIN/BPM_MAX edges). Both are a
+    // known artifact trap on this hardware: on-skin captures 2026-09-02 repeatedly
+    // pinned to bin 0 (40 BPM) at low confidence with no real 40 BPM signal present.
+    // An edge bin also has no neighbor on one side, so the parabolic interpolation
+    // below was already unsafe there -- excluding them fixes both problems at once.
+    int best = 1;
     float bestP = -1.0f, totalP = 0.0f;
     for (int k = 0; k < N_BINS; k++) {
       float p = resRe[k] * resRe[k] + resIm[k] * resIm[k];
       totalP += p;
-      if (p > bestP) { bestP = p; best = k; }
+      if (k > 0 && k < N_BINS - 1 && p > bestP) { bestP = p; best = k; }
     }
 
     float rawBpm = binBpm[best];
-    if (best > 0 && best < N_BINS - 1) {
+    {
       float lo = resRe[best - 1] * resRe[best - 1] + resIm[best - 1] * resIm[best - 1];
       float hi = resRe[best + 1] * resRe[best + 1] + resIm[best + 1] * resIm[best + 1];
       float denom = lo - 2.0f * bestP + hi;
@@ -440,25 +452,28 @@ struct WearDetect {
   bool justReleased = false;
 
   // Whether the PPG signal is strong enough to trust the rate. Independent of the
-  // wear decision: the bracelet stays lit on GSR alone, but says so honestly when the
-  // pulse is not believable.
+  // wear decision, which is also PPG-derived now (IR DC) -- pulseTrusted additionally
+  // requires perfusion, so a worn-but-flat signal (bad contact, motion) still reports
+  // honestly instead of a confident number.
   bool pulseTrusted = false;
 
   // Runtime-tunable; see BraceletConfig.
   float piTrustMin = PI_TRUST_MIN;
-  float gsrWornMin = (float)GSR_WORN_MIN;
-  float gsrWornMax = (float)GSR_WORN_MAX;
+  float irWornMin = (float)PPG_IR_WORN_MIN;
+  float irWornMax = (float)PPG_IR_WORN_MAX;
 
   void applyConfig(const BraceletConfig &cfg) {
     piTrustMin = cfg.piTrustMin;
-    gsrWornMin = cfg.gsrWornMin;
-    gsrWornMax = cfg.gsrWornMax;
+    irWornMin = cfg.irWornMin;
+    irWornMax = cfg.irWornMax;
   }
 
-  bool update(uint16_t gsrRaw, float perfusion, uint32_t now) {
+  // ppgIr: raw IR DC level from the MAX30102, not GSR (-6y4 -- GSR is a floating
+  // analog input when unworn and has no stable disconnected signature).
+  bool update(uint32_t ppgIr, float perfusion, uint32_t now) {
     justReleased = false;
     pulseTrusted = perfusion >= piTrustMin;
-    bool contact = ((float)gsrRaw >= gsrWornMin && (float)gsrRaw <= gsrWornMax);
+    bool contact = ((float)ppgIr >= irWornMin && (float)ppgIr <= irWornMax);
 
     if (contact == worn) {
       candidate = worn;              // steady; nothing pending

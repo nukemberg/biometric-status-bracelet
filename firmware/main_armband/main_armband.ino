@@ -497,7 +497,7 @@ void TaskSensorDSP(void *pvParameters) {
       }
 
       float pi = pulse.perfusion();
-      bool worn = wear.update(lastGsr, pi, (uint32_t)millis());
+      bool worn = wear.update(lastIr, pi, (uint32_t)millis());
       // The state machine reports the release; acting on it is ours to do, so a
       // fresh wearer never sees the previous one's rate while the bank reconverges.
       if (wear.justReleased) pulse.clearBank();
@@ -1351,12 +1351,13 @@ void loop() {
       Serial.print(pi, 2);
       Serial.print(F("% | RawGSR: "));
       Serial.print(gsrRaw);
-      Serial.print(F(" (worn needs "));
-      Serial.print(GSR_WORN_MIN);
-      Serial.print(F("-"));
-      Serial.print(GSR_WORN_MAX);
-      Serial.print(F(") | IR: "));
+      Serial.print(F(" | IR: "));
       Serial.print(irRaw);
+      Serial.print(F(" (worn needs "));
+      Serial.print(PPG_IR_WORN_MIN);
+      Serial.print(F("-"));
+      Serial.print(PPG_IR_WORN_MAX);
+      Serial.print(F(")"));
       // Temperature only appeared on the worn line, so a sensor stuck at a
       // plausible-looking constant was invisible on a bench device that is never
       // worn -- which is how a BME280 that never converted went unnoticed.

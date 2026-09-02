@@ -68,14 +68,14 @@
 // times more than the 1-2 samples a 25 Hz drain actually expects.
 #define MAX30102_DRAIN_MAX         16
 
-// LED drive current, 0.2 mA per LSB. 0x32 = 10 mA.
+// LED drive current, 0.2 mA per LSB. 0x19 = 5 mA.
 //
-// Not tuned on skin yet. Too low and the DC level sits in the noise; too high and the
-// 18-bit ADC saturates and the cardiac AC is clipped away at the top of the range --
-// both look like "no pulse" and neither announces itself. The right value depends on
-// skin tone, hair and strap tension; check the raw IR DC against the guidance in
-// DESIGN.md section 4.2 before trusting a capture.
-#define MAX30102_LED_CURRENT       0x32
+// Tuned on skin 2026-09-02: at 0x32 (10 mA) IR DC sat 157k-159k against a 262143
+// full scale, above the 20k-150k target in DESIGN.md 4.2 and close enough to the
+// ADC ceiling to risk clipping the cardiac AC. Halved to 0x19; re-measure IR DC
+// on the next capture and retune if it's not comfortably inside 20k-150k -- this
+// depends on skin tone, hair and strap tension so it isn't a universal constant.
+#define MAX30102_LED_CURRENT       0x19
 
 struct Max30102 {
   TwoWire *wire = nullptr;

@@ -558,7 +558,7 @@ const STREAM_SIGNALS = 0x01, STREAM_SPECTRUM = 0x02;
 // (-x9q) builds on these; the wire format itself is owned by -pmw.
 const CONFIG_PARAMS = {
   hue_bpm_lo: 0x01, hue_bpm_hi: 0x02, hue_at_lo: 0x03, hue_at_hi: 0x04,
-  pi_trust_min: 0x05, gsr_worn_min: 0x06, gsr_worn_max: 0x07,
+  pi_trust_min: 0x05, ir_worn_min: 0x06, ir_worn_max: 0x07,
   conf_gate: 0x08, conf_ref: 0x09, slew_bpm_s: 0x0A,
 };
 const CONFIG_PARAM_COUNT = Object.keys(CONFIG_PARAMS).length;
@@ -584,8 +584,11 @@ const CONFIG_META = {
   // set the threshold, so it must reach past whatever good contact turns out to
   // produce. Device bound is 0-100 (config_store FIELDS), so 20 stays well inside it.
   pi_trust_min: {min: 0,   max: 20,   step: 0.05, label: "Perfusion trust"},
-  gsr_worn_min: {min: 0,   max: 4095, step: 5,   label: "GSR worn min"},
-  gsr_worn_max: {min: 0,   max: 4095, step: 5,   label: "GSR worn max"},
+  // IR DC, 18-bit MAX30102 full scale (DESIGN.md 4.2: off-skin < ~5000, healthy
+  // 20000-150000, clipping > ~240000). Wear gate switched from GSR to PPG IR (-6y4)
+  // because an unworn GSR electrode is a floating input with no stable signature.
+  ir_worn_min:  {min: 0,   max: 262143, step: 100, label: "IR worn min"},
+  ir_worn_max:  {min: 0,   max: 262143, step: 100, label: "IR worn max"},
   conf_gate:    {min: 0,   max: 1,    step: 0.01, label: "Conf gate"},
   conf_ref:     {min: 0,   max: 1,    step: 0.01, label: "Conf ref"},
   slew_bpm_s:   {min: 0,   max: 30,   step: 0.5,  label: "Slew BPM/s"},
@@ -593,7 +596,7 @@ const CONFIG_META = {
 };
 const CONFIG_GROUPS = [
   {name: "Hue gradient",  params: ["hue_bpm_lo", "hue_bpm_hi", "hue_at_lo", "hue_at_hi"]},
-  {name: "Wear gate",     params: ["pi_trust_min", "gsr_worn_min", "gsr_worn_max"]},
+  {name: "Wear gate",     params: ["pi_trust_min", "ir_worn_min", "ir_worn_max"]},
   {name: "Pulse tracking", params: ["conf_gate", "conf_ref", "slew_bpm_s"]},
   {name: "Display",       params: ["brightness"]},
 ];
