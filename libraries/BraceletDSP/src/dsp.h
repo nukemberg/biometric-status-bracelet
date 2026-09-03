@@ -125,7 +125,7 @@
 // Confidence is deliberately used for neither: an unworn board was observed reporting
 // confidence 0.29, as high as a good worn signal, because the bank locks onto noise
 // just as happily as onto a pulse.
-#define PPG_IR_WORN_MIN   5000       // below this: off skin, or LED current starved
+#define PPG_IR_WORN_MIN   10000       // below this: off skin, or LED current starved
 #define PPG_IR_WORN_MAX   262143     // 18-bit full scale; clipping is still worn contact
 
 // Above this the cardiac signal is strong enough to believe the rate. Below it the
