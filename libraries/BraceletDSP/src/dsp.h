@@ -225,6 +225,11 @@ struct BraceletConfig {
   float slewBpmPerS = SLEW_BPM_PER_S;
   float brightness  = 60.0f;
 
+  // One-point offset against a reference thermometer, added to the BME280 reading.
+  // Compensates case self-heating from the 21 WS2812s and the radio, not sensor
+  // trim error -- the factory +-0.5C spec is already smaller than that effect.
+  float tempOffsetC = 0.0f;
+
   static BraceletConfig defaults() { return BraceletConfig(); }
 };
 

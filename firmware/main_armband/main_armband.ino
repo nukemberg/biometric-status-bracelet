@@ -535,7 +535,7 @@ void TaskSensorDSP(void *pvParameters) {
         bme.takeForcedMeasurement();
         bmeTriggered = true;
       } else {
-        float t = bme.readTemperature();
+        float t = bme.readTemperature() + cfg.tempOffsetC;
         float h = bme.readHumidity();
         bme.takeForcedMeasurement();   // start the one we will read next time
 

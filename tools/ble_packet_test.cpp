@@ -323,6 +323,7 @@ static void testConfigRead() {
   float values[CFG_PARAM_COUNT] = {
     1.0f, 2.0f, 3.0f, 4.0f, 0.25f,   // hue anchors + piTrustMin
     100.0f, 4000.0f, 0.5f, 0.9f, 8.0f,  // gsr/conf/slew
+    60.0f, -1.5f,   // brightness, tempOffsetC
   };
 
   uint8_t buf[BLE_CONFIG_READ_LEN];

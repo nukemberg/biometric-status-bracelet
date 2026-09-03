@@ -116,7 +116,8 @@ enum BleConfigParam : uint8_t {
   CFG_CONF_REF     = 0x09,
   CFG_SLEW_BPM_S   = 0x0A,
   CFG_BRIGHTNESS   = 0x0B,
-  CFG_PARAM_COUNT  = 0x0B,
+  CFG_TEMP_OFFSET_C = 0x0C,
+  CFG_PARAM_COUNT  = 0x0C,
 };
 
 // ---------------------------------------------------------------------------
