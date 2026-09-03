@@ -54,7 +54,14 @@ physically present, and the firmware does not read those.
   pins broken out for external LEDs — the onboard LEDs are fitted, so leave both
   floating. The die is on the face *opposite* the silkscreen; headers solder to the
   labelled side and the optical window faces skin.
-- **BME280** — I²C temperature/humidity. Address 0x76 or 0x77.
+- **BME280** — I²C temperature/humidity. Address 0x76 or 0x77. The fitted clone does not
+  retain the library's default normal mode: a write of mode=normal to ctrl_meas is ACKed
+  and reads back correctly, then clears itself to sleep within 1 ms (same at 100 kHz, so
+  not a signal-integrity issue), leaving `readTemperature()` returning a constant
+  fabricated ~21.5 °C forever. Firmware drives it in **forced mode** instead (one
+  conversion per read, triggered explicitly, pressure oversampling skipped) — see
+  `firmware/bme_test` for the bench probe and `tryInitSensors()` in
+  `main_armband.ino`.
 - **WS2812B ×21** — 3 segments of 7, data via 330 Ω series resistor. Most strips accept
   3.3 V logic; add a 74AHCT125 if flickering appears. Glued to the case in a **spiral**,
   not a straight run: the data chain order is segment A → segment C (physically the
