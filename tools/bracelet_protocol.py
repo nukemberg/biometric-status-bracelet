@@ -9,6 +9,7 @@ producing plausible wrong numbers.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 
@@ -103,6 +104,7 @@ class Vitals:
     worn: bool
     pulse_trusted: bool
     strobe: bool
+    breath_phase: float  # radians, [0, 2*pi); mode 3 only, see ble_protocol.h
 
     def format(self) -> str:
         flags = []
@@ -124,8 +126,8 @@ def decode_vitals(data: bytes) -> Vitals:
         raise ProtocolError(f"vitals: {len(data)} bytes, expected {VITALS_LEN}")
     flags = data[1]
     # pulse_raw is u32 since protocol v2 -- MAX30102 IR is an 18-bit count.
-    bpm, conf, arousal, perf, gsr, pulse, temp, tonic, bright = struct.unpack_from(
-        "<HBBHHIhHB", data, 2
+    bpm, conf, arousal, perf, gsr, pulse, temp, tonic, bright, breath = (
+        struct.unpack_from("<HBBHHIhHBB", data, 2)
     )
     return Vitals(
         bpm=bpm / 10.0,
@@ -141,6 +143,7 @@ def decode_vitals(data: bytes) -> Vitals:
         worn=bool(flags & VF_WORN),
         pulse_trusted=bool(flags & VF_PULSE_TRUSTED),
         strobe=bool(flags & VF_STROBE),
+        breath_phase=(breath / 255.0) * 2.0 * math.pi,
     )
 
 
@@ -254,7 +257,7 @@ def decode_config_read(data: bytes) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 FIXTURE_VITALS = bytes(
     [0x02, 0x13, 0x83, 0x02, 0x40, 0x80, 0xA0, 0x00, 0x05, 0x05,
-     0xF5, 0x48, 0x01, 0x00, 0x41, 0x0A, 0x9B, 0x05, 0x3C, 0x00]
+     0xF5, 0x48, 0x01, 0x00, 0x41, 0x0A, 0x9B, 0x05, 0x3C, 0x80]
 )
 # Sample 0 of the signals fixture in ble_packet_test.cpp::testSignals, byte for byte,
 # wrapped in a count=1 header so it decodes standalone. The C++ fixture packs five;
@@ -313,6 +316,7 @@ def selftest() -> int:
     check("worn", v.worn, True)
     check("pulse_trusted", v.pulse_trusted, True)
     check("strobe", v.strobe, False)
+    check("breath_phase", v.breath_phase, math.pi, 0.03)
 
     # Signals: the widened pulse fields are the whole point of v2, so the fixture
     # carries values that would not have survived the v1 i16/u16 widths.

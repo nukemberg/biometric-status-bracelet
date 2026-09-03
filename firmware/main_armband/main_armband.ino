@@ -678,9 +678,11 @@ static inline uint8_t beatEnvelope(float phase) {
 // ============================================================================
 // GSR-adaptive, not a fixed metronome: half-cycle (inhale or exhale) duration shortens
 // as arousal rises and lengthens as it settles, so the pacer follows the wearer then
-// gently invites a slower breath as GSR shows they're calming. Mirrored independently
-// in webapp/index.html (BREATH_HALF_CYCLE_*_S there) -- same idea, not a shared phase
-// over the wire, so the two will drift apart in exact timing, not just cosmetically.
+// gently invites a slower breath as GSR shows they're calming. The rate formula is
+// duplicated (not shared) in webapp/index.html (BREATH_HALF_CYCLE_*_S there), but
+// this device is the authority on phase: breathPhase itself goes out over BLE in
+// the vitals packet (see blePackVitals), and the webapp locks to it on every
+// packet rather than accumulating an independently-seeded copy.
 #define BREATH_HALF_CYCLE_AROUSED_S 3.0f
 #define BREATH_HALF_CYCLE_CALM_S    6.0f
 float breathPhase = 0.0f;
@@ -1291,6 +1293,9 @@ void loop() {
     bioDataUnlock();
     v.strobe = (v.mode == 1) || (v.pulseTrusted && displayBpm > 150.0f &&
                                  v.arousal > 0.65f);
+    // breathPhase is this loop's own global (advanced in renderBreathing, called
+    // earlier in this same iteration), not bio.* -- no lock needed to read it.
+    v.breathPhase = breathPhase;
 
     BleService::publishVitals(v);
   }

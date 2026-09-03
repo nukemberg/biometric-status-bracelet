@@ -93,6 +93,7 @@ static void testVitals() {
   v.worn = true;
   v.pulseTrusted = true;
   v.strobe = false;
+  v.breathPhase = 3.14159265f;  // half cycle -> 0.5 of the u8 range
 
   uint8_t buf[BLE_VITALS_LEN];
   size_t n = blePackVitals(buf, v);
@@ -101,6 +102,7 @@ static void testVitals() {
   // flags: worn(0x01) | trusted(0x02) | mode 2 << 3 (0x10) = 0x13
   // bpm 643 = 0x0283 ; perfusion 160 = 0x00A0 ; gsr 1285 = 0x0505
   // pulse 84213 = 0x000148F5 ; temp 2625 = 0x0A41 ; tonic 1435 = 0x059B
+  // breathPhase PI / 2PI = 0.5 -> 128 = 0x80
   const uint8_t want[BLE_VITALS_LEN] = {
       0x02,        // version
       0x13,        // flags
@@ -113,7 +115,7 @@ static void testVitals() {
       0x41, 0x0A,  // temp x100 = 2625
       0x9B, 0x05,  // gsr tonic 1435
       0x3C,        // brightness 60
-      0x00,        // reserved
+      0x80,        // breathPhase PI -> 128
   };
   checkBytes("vitals golden bytes", buf, want, BLE_VITALS_LEN);
 
@@ -135,6 +137,7 @@ static void testVitals() {
   checkEq("vitals worn", r.worn, 1);
   checkEq("vitals pulseTrusted", r.pulseTrusted, 1);
   checkEq("vitals strobe", r.strobe, 0);
+  checkNear("vitals breathPhase", r.breathPhase, v.breathPhase, 0.03f);
 }
 
 static void testVitalsEdges() {

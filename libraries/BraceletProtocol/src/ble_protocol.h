@@ -181,6 +181,10 @@ static inline uint8_t bleUnitToU8(float v) {
   return (uint8_t)(v * 255.0f + 0.5f);
 }
 
+// Avoids depending on <math.h> just for M_PI, which the file comment at the top
+// deliberately excludes.
+#define BLE_TWO_PI 6.283185307f
+
 // ---------------------------------------------------------------------------
 // Vitals -- 20 bytes, notified at 4 Hz
 //
@@ -195,7 +199,7 @@ static inline uint8_t bleUnitToU8(float v) {
 // 14  i16  temperature C x100
 // 16  u16  gsr tonic
 // 18  u8   brightness
-// 19  u8   reserved
+// 19  u8   breathPhase, 0..255 -> 0..2*PI (mode 3 only; ignored otherwise)
 // ---------------------------------------------------------------------------
 struct BleVitals {
   float bpm = 0.0f;
@@ -211,6 +215,12 @@ struct BleVitals {
   bool worn = false;
   bool pulseTrusted = false;
   bool strobe = false;
+  // Radians, [0, 2*PI). Only meaningful in mode 3 (biofeedback breathing pacer) --
+  // see advanceBreathPhase() in main_armband.ino. Lets a client (the webapp) lock
+  // its own breathing animation to the device's actual phase instead of running an
+  // independently-seeded copy of the same formula, which tracks the same tempo but
+  // drifts out of phase from whatever moment each side started counting from.
+  float breathPhase = 0.0f;
 };
 
 static inline size_t blePackVitals(uint8_t *b, const BleVitals &v) {
@@ -231,7 +241,7 @@ static inline size_t blePackVitals(uint8_t *b, const BleVitals &v) {
   bleputI16(b, 14, bleScaleI16(v.tempC, 100.0f));
   bleputU16(b, 16, bleScaleU16(v.gsrTonic, 1.0f));
   bleputU8(b, 18, v.brightness);
-  bleputU8(b, 19, 0);
+  bleputU8(b, 19, bleUnitToU8(v.breathPhase / BLE_TWO_PI));
   return BLE_VITALS_LEN;
 }
 
@@ -252,6 +262,7 @@ static inline bool bleUnpackVitals(const uint8_t *b, size_t len, BleVitals &v) {
   v.tempC = blegetI16(b, 14) / 100.0f;
   v.gsrTonic = (float)blegetU16(b, 16);
   v.brightness = blegetU8(b, 18);
+  v.breathPhase = (blegetU8(b, 19) / 255.0f) * BLE_TWO_PI;
   return true;
 }
 

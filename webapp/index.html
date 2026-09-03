@@ -637,6 +637,7 @@ function decodeVitals(dv) {
     tempC:      dv.getInt16(14, true) / 100,
     gsrTonic:   dv.getUint16(16, true),
     brightness: dv.getUint8(18),
+    breathPhase: (dv.getUint8(19) / 255) * 2 * Math.PI,
     mode:       (flags & 0x18) >> 3,
     worn:         !!(flags & 0x01),
     pulseTrusted: !!(flags & 0x02),
@@ -775,9 +776,11 @@ let lastFrame = performance.now();
 
 // Breathing pacer for mode 3 ("Breathe"). Half-cycle (inhale or exhale) duration is
 // GSR-adaptive rather than fixed: short/urgent when aroused, long/slow once settled --
-// mirrors the same idea driving the LED strip's own biofeedback render, though the two
-// are computed independently (each side reads live vitals.arousal, not a shared phase
-// over the wire) and so will drift apart in exact timing, not just cosmetically.
+// mirrors the same idea driving the LED strip's own biofeedback render. The rate
+// formula is duplicated (not shared) on each side, but the phase itself now IS
+// shared: vitals.breathPhase carries the device's actual phase and render() snaps
+// this to it on every packet, so the two stay phase-locked rather than merely
+// beating at the same tempo from independent starting points.
 const BREATH_HALF_CYCLE_AROUSED_S = 3.0;
 const BREATH_HALF_CYCLE_CALM_S = 6.0;
 let breathPhase = 0;
@@ -902,6 +905,11 @@ function irBarPercent(ir) {
 
 function render(v) {
   vitals = v;
+  // Snap to the device's actual phase on every packet (mode 3 only -- the wire
+  // field is meaningless otherwise) so this doesn't merely beat at the right tempo
+  // but drift out of sync with the LED strip; frame() still advances it locally
+  // between the ~285ms packet gaps for a smooth 60fps animation.
+  if (v.mode === 3) breathPhase = v.breathPhase;
 
   const trusted = v.pulseTrusted && v.worn;
   document.body.dataset.trust = trusted ? "ok" : "none";
