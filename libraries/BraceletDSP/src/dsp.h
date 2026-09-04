@@ -73,7 +73,26 @@
 #define PHASIC_TAU      0.7f
 #define SCR_ATTACK_TAU  0.15f
 #define SCR_RELEASE_TAU 3.0f
-#define SLOPE_CLAMP     60.0f   // counts/s; rejects contact/motion steps
+// counts/s. A ceiling on how fast phasic may be seen to rise, NOT a rejector -- a
+// contact step is capped and then fed to the same envelope as a real response, so
+// this bounds an artifact's height rather than removing it. Shape is what actually
+// separates the two (a contact step is sharp in both directions, an SCR is
+// fast-rise/slow-exponential-recovery), which a scalar ceiling cannot see; proper
+// rejection needs the IMU (-00y).
+//
+// 60 was inert: measured across all three breath captures, no sample ever reached
+// it, so the artifact it was documented to reject (peak slope 54.7 in
+// breath_paced_01.csv) passed through untouched. Real SCRs peak at 2.5-9.7 counts/s
+// (7 cued sighs, breath_sigh_01.csv), so 15 keeps ~1.5x margin over the strongest
+// physiological slope seen while cutting artifact saturation from 4.28 % to 3.10 %
+// of a resting session. SCR fidelity is unchanged at this value -- verified down to
+// 10, since a real response's drive envelope stays well under its momentary slope.
+//
+// Deliberately a clamp and not a gate: this margin rests on 7 SCRs from one wearer
+// under mild provocation, and a startle could exceed it. Clipping a strong response
+// to "strong" loses a distinction; discarding it would lose the event -- and a
+// threshold set above real signal is exactly the defect -0b6 was.
+#define SLOPE_CLAMP     15.0f
 // FLOOR_ATTACK/RELEASE replace the old RANGE_TAU mean-tracker (see -9ny, -l96): a
 // plain EMA of drive settles arousal near 1/RANGE_GAIN at ANY steady drive level,
 // resting or not, because the normalizer chases whatever drive currently is. floor

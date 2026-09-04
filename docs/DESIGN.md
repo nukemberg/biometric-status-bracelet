@@ -420,6 +420,25 @@ sessions, and that 4× spread is exactly why the floor adapts and why its minimu
 double as its working value. `tools/gsr_scr_test.py` (`just test-gsr`) is the regression.
 Fitting the anti-alias RC (-jg6) would let this go lower still.
 
+`SLOPE_CLAMP` is the other half of the same story, from the opposite direction. It caps
+how fast phasic may be *seen* to rise, and its comment claimed it "rejects contact/motion
+steps" — it does not. It is a ceiling, not a rejector: a capped step is still fed to the
+same envelope as a real response. And at 60 it was inert, since no sample in any of the
+three breath captures ever reached it — including the largest contact artifact in
+`breath_paced_01.csv`, which peaks at slope 54.7 and passed through untouched. Real SCRs
+peak at 2.5–9.7 counts/s across the seven cued sighs, so **since 2026-09-04 it is 15**:
+~1.5× margin over the strongest physiological slope observed, cutting artifact saturation
+from 4.28 % to 3.10 % of a resting session with SCR fidelity provably unchanged (verified
+down to 10 — a real response's drive envelope stays well below its momentary slope).
+
+It stays a *clamp* rather than becoming a gate on purpose. The margin rests on seven SCRs
+from one wearer under mild provocation, and a startle could exceed it; clipping a strong
+response to "strong" loses a distinction, whereas discarding it would lose the event — and
+a threshold set above real signal is precisely the defect -0b6 was. What a scalar ceiling
+fundamentally cannot do is tell the two apart by *shape* (a contact step is sharp in both
+directions; an SCR is fast-rise/slow-exponential-recovery). That needs the IMU, tracked as
+-00y. The remaining 3.1 % is its problem, not this constant's.
+
 ### 3.4 LED rendering
 
 - **Phase-locked oscillator.** A free-running phase accumulator advances at the tracked

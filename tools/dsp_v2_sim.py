@@ -83,7 +83,13 @@ TONIC_TAU = 45.0
 PHASIC_TAU = 0.7
 SCR_ATTACK_TAU = 0.15
 SCR_RELEASE_TAU = 3.0
-SLOPE_CLAMP = 60.0  # counts/s; rejects contact/motion steps (measured up to 570)
+# counts/s. A ceiling on apparent phasic rise rate, not a rejector -- see the long
+# comment in dsp.h. 60 was inert on every capture we have (max observed slope 54.7,
+# in the artifact-heavy breath_paced_01.csv), while real SCRs peak at 2.5-9.7. 15
+# keeps ~1.5x margin over the strongest physiological slope and cuts artifact
+# saturation 4.28 % -> 3.10 %. Severe artifacts on the older analog front end reached
+# 570, so the ceiling does bind on the bad cases it exists for. Must match dsp.h.
+SLOPE_CLAMP = 15.0
 #
 # FLOOR_ATTACK/RELEASE_TAU replace the old RANGE_TAU mean-tracker (see -9ny, -l96): a
 # plain EMA of drive settles arousal near 1/RANGE_GAIN at ANY steady drive level,
