@@ -294,6 +294,14 @@ struct BraceletConfig {
   // trim error -- the factory +-0.5C spec is already smaller than that effect.
   float tempOffsetC = 0.0f;
 
+  // GSR arousal display curve (main_armband.ino's arousalDisplayFor, mirrored in
+  // webapp/index.html). Presentation-only gamma+floor lift applied where the LED
+  // panel and webapp render arousal cosmetically -- the wire value and the breathing
+  // pacer's timing stay on the raw measurement. See -eba: needs live tuning, hence
+  // runtime-tunable rather than a #define.
+  float arousalDisplayGamma = 0.5f;
+  float arousalDisplayFloor = 0.12f;
+
   static BraceletConfig defaults() { return BraceletConfig(); }
 };
 

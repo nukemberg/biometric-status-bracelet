@@ -327,6 +327,7 @@ static void testConfigRead() {
     1.0f, 2.0f, 3.0f, 4.0f, 0.25f,   // hue anchors + piTrustMin
     100.0f, 4000.0f, 0.5f, 0.9f, 8.0f,  // gsr/conf/slew
     60.0f, -1.5f,   // brightness, tempOffsetC
+    0.6f, 0.15f,    // arousalDisplayGamma, arousalDisplayFloor
   };
 
   uint8_t buf[BLE_CONFIG_READ_LEN];

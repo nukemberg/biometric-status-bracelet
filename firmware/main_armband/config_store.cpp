@@ -16,7 +16,12 @@ namespace {
 // which is precisely the silent-wrong-number case this store is built to avoid. The
 // bump forces every device to fall back to compiled defaults once, so the threshold
 // gets re-derived from the new sensor rather than inherited from the old one.
-constexpr uint8_t CONFIG_SCHEMA_VERSION = 2;
+//
+// v3: added arousalDisplayGamma/arousalDisplayFloor (-eba). A v2 blob is missing
+// these keys, which load() already treats as "one field absent invalidates the
+// whole load" -- so the bump is required for that fallback to trigger rather than
+// booting with a NaN-checked-but-uninitialized display curve.
+constexpr uint8_t CONFIG_SCHEMA_VERSION = 3;
 
 // One key per field rather than a single packed blob. Costs a few more NVS entries
 // but means a value out of plausible range can be rejected per-field instead of
@@ -42,6 +47,8 @@ const FieldSpec FIELDS[] = {
     {"slewBpmPerS",&BraceletConfig::slewBpmPerS,0.0f,    400.0f},
     {"brightness", &BraceletConfig::brightness, 0.0f,    255.0f},
     {"tempOffsetC",&BraceletConfig::tempOffsetC,-10.0f,  10.0f},
+    {"arDispGamma",&BraceletConfig::arousalDisplayGamma, 0.05f, 3.0f},
+    {"arDispFloor",&BraceletConfig::arousalDisplayFloor, 0.0f,  1.0f},
 };
 constexpr size_t FIELD_COUNT = sizeof(FIELDS) / sizeof(FIELDS[0]);
 

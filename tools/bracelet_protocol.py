@@ -66,6 +66,8 @@ CONFIG_PARAMS = {
     "slew_bpm_s": 0x0A,
     "brightness": 0x0B,
     "temp_offset_c": 0x0C,
+    "arousal_gamma": 0x0D,
+    "arousal_floor": 0x0E,
 }
 # Inverse of CONFIG_PARAMS, built once. The read returns records in ascending
 # paramId order, so this is also the order decode_config_read yields.
@@ -286,6 +288,8 @@ FIXTURE_CONFIG_READ = (
     + bytes([0x0A]) + struct.pack("<f", 8.0)    # slew_bpm_s
     + bytes([0x0B]) + struct.pack("<f", 120.0)  # brightness
     + bytes([0x0C]) + struct.pack("<f", -1.5)   # temp_offset_c
+    + bytes([0x0D]) + struct.pack("<f", 0.6)    # arousal_gamma
+    + bytes([0x0E]) + struct.pack("<f", 0.15)   # arousal_floor
 )
 
 

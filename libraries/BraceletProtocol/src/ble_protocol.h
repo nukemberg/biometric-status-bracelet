@@ -62,7 +62,7 @@
 // ascending paramId order. Same record shape as the write, so a client shares one
 // decoder between the two directions. Fits a single 247-byte ATT MTU with room to
 // spare, so a read is never fragmented into packets a decoder would reject.
-#define BLE_CONFIG_READ_LEN   (CFG_PARAM_COUNT * BLE_CONFIG_WRITE_LEN)   // 50
+#define BLE_CONFIG_READ_LEN   (CFG_PARAM_COUNT * BLE_CONFIG_WRITE_LEN)   // 70
 
 // Vitals flag bits
 #define VF_WORN            0x01
@@ -117,7 +117,9 @@ enum BleConfigParam : uint8_t {
   CFG_SLEW_BPM_S   = 0x0A,
   CFG_BRIGHTNESS   = 0x0B,
   CFG_TEMP_OFFSET_C = 0x0C,
-  CFG_PARAM_COUNT  = 0x0C,
+  CFG_AROUSAL_GAMMA = 0x0D,   // GSR arousal display curve, presentation-only (-eba)
+  CFG_AROUSAL_FLOOR = 0x0E,
+  CFG_PARAM_COUNT  = 0x0E,
 };
 
 // ---------------------------------------------------------------------------

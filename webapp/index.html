@@ -571,7 +571,7 @@ const CONFIG_PARAMS = {
   hue_bpm_lo: 0x01, hue_bpm_hi: 0x02, hue_at_lo: 0x03, hue_at_hi: 0x04,
   pi_trust_min: 0x05, ir_worn_min: 0x06, ir_worn_max: 0x07,
   conf_gate: 0x08, conf_ref: 0x09, slew_bpm_s: 0x0A, brightness: 0x0B,
-  temp_offset_c: 0x0C,
+  temp_offset_c: 0x0C, arousal_gamma: 0x0D, arousal_floor: 0x0E,
 };
 const CONFIG_PARAM_COUNT = Object.keys(CONFIG_PARAMS).length;
 
@@ -608,6 +608,12 @@ const CONFIG_META = {
   // One-point offset against a reference thermometer; device bound is +-10C
   // (config_store FIELDS).
   temp_offset_c: {min: -10, max: 10,  step: 0.1,  label: "Temp offset (°C)"},
+  // Presentation-only reshaping of arousal for the LED hue/VU-meter and the
+  // webapp's own VU-meter + breath circle (see -eba); the numeric readout, wire
+  // value, and breath pacer timing all stay on the raw measurement. Device bound
+  // is gamma 0.05-3.0, floor 0-1.0 (config_store FIELDS).
+  arousal_gamma: {min: 0.1, max: 2,   step: 0.05, label: "Arousal display gamma"},
+  arousal_floor: {min: 0,   max: 0.5, step: 0.01, label: "Arousal display floor"},
 };
 const CONFIG_GROUPS = [
   {name: "Hue gradient",  params: ["hue_bpm_lo", "hue_bpm_hi", "hue_at_lo", "hue_at_hi"]},
@@ -615,6 +621,7 @@ const CONFIG_GROUPS = [
   {name: "Pulse tracking", params: ["conf_gate", "conf_ref", "slew_bpm_s"]},
   {name: "Display",       params: ["brightness"]},
   {name: "Temperature",   params: ["temp_offset_c"]},
+  {name: "Arousal display", params: ["arousal_gamma", "arousal_floor"]},
 ];
 
 function decodeVitals(dv) {
@@ -791,6 +798,20 @@ const BREATH_HALF_CYCLE_AROUSED_S = 3.0;
 const BREATH_HALF_CYCLE_CALM_S = 6.0;
 let breathPhase = 0;
 
+// GSR arousal display curve (presentation-only, see -eba). Mirrors arousalDisplayFor
+// in main_armband.ino -- duplicated rather than shared, same as BREATH_HALF_CYCLE_*_S.
+// Applied only to the VU-meter fill and breath-circle colour (cosmetic); the numeric
+// arousal readout and the breath pacer's half-cycle timing stay on the raw value.
+// Reads from deviceConfig (loaded/written via the config panel, -x9q) so tuning here
+// is the same live BLE round-trip as every other slider; falls back to the compiled
+// defaults (BraceletConfig in dsp.h) until the first config read lands.
+function arousalDisplayFor(raw) {
+  const r = Math.max(0, Math.min(1, raw));
+  const gamma = deviceConfig.arousal_gamma ?? 0.5;
+  const floor = deviceConfig.arousal_floor ?? 0.12;
+  return floor + (1 - floor) * Math.pow(r, gamma);
+}
+
 function frame(now) {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -813,7 +834,7 @@ function frame(now) {
       paint(leds.pulse[i], colour, trusted ? v : v * 0.32);
     }
 
-    const lit = Math.round(vitals.arousal * SEG);
+    const lit = Math.round(arousalDisplayFor(vitals.arousal) * SEG);
     for (let i = 0; i < SEG; i++) {
       paint(leds.arousal[i],
             mixHex(css("--arousal-lo"), css("--arousal-hi"), i / (SEG - 1)),
@@ -837,7 +858,7 @@ function frame(now) {
       // 0..PI = inhale (env rising 0->1), PI..2PI = exhale (env falling 1->0).
       const env = 0.5 - 0.5 * Math.cos(breathPhase);
       const scale = 0.6 + 0.6 * env;
-      const [r, g, b] = mixHex(css("--arousal-lo"), css("--arousal-hi"), vitals.arousal);
+      const [r, g, b] = mixHex(css("--arousal-lo"), css("--arousal-hi"), arousalDisplayFor(vitals.arousal));
       $("breathCircle").style.transform = `scale(${scale.toFixed(3)})`;
       $("breathCircle").style.background = `rgb(${r} ${g} ${b})`;
       $("breathWord").textContent = breathPhase < Math.PI ? "Breathe in" : "Breathe out";

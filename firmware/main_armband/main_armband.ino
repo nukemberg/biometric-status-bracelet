@@ -655,6 +655,23 @@ static inline uint8_t pulseHueFor(float bpm) {
 }
 
 // ============================================================================
+// GSR AROUSAL DISPLAY CURVE (presentation-only, see -eba)
+// ============================================================================
+// GsrTracker's arousal output is now a genuine measurement that rests near 0 --
+// accurate, but the LED hue/VU-meter read as lifeless at baseline. This gamma+floor
+// lift is a display-only reshaping applied where rendering happens; the wire value
+// (BleVitals.arousal) and the breathing pacer's half-cycle timing stay on the raw
+// measurement so BLE consumers and the biofeedback pace remain trustworthy.
+// Duplicated in webapp/index.html (arousalDisplayFor there) rather than shared, same
+// as BREATH_HALF_CYCLE_*_S. Runtime-tunable (cfg.arousalDisplayGamma/Floor, see
+// BraceletConfig in dsp.h) rather than #defines, same as the hue anchors -- tune it
+// live from the webapp config panel instead of a reflash-per-guess loop.
+static inline float arousalDisplayFor(float raw) {
+  float r = clampf(raw, 0.0f, 1.0f);
+  return cfg.arousalDisplayFloor + (1.0f - cfg.arousalDisplayFloor) * powf(r, cfg.arousalDisplayGamma);
+}
+
+// ============================================================================
 // STANDBY DISPLAY (nothing on the wrist)
 // ============================================================================
 // Slow indigo breath across the whole panel. Deliberately unlike any active state so
@@ -728,7 +745,7 @@ static inline void paintBreathPixel(const LedSegment &seg, int row, int col,
 void renderBreathing(float excitement) {
   advanceBreathPhase(excitement);
   float env = 0.5f - 0.5f * cosf(breathPhase);   // 0 at cycle start (empty), 1 at the peak (full)
-  uint8_t hue = (uint8_t)(96.0f + 144.0f * clampf(excitement, 0.0f, 1.0f));
+  uint8_t hue = (uint8_t)(96.0f + 144.0f * arousalDisplayFor(excitement));
 
   const float maxDist = 1.41421356f;   // sqrt(2): normalized distance to a far corner
   float radius = env * maxDist;
@@ -794,7 +811,7 @@ void renderBiometricPanel() {
   // SEGMENT 2: GSR EXCITEMENT VU-METER (LEDs 7 to 13, physically reversed --
   // see SEG_B above)
   // --------------------------------------------------------------------------
-  uint8_t litLedsGSR = (uint8_t)(excitement * 7.0 + 0.5);
+  uint8_t litLedsGSR = (uint8_t)(arousalDisplayFor(excitement) * 7.0 + 0.5);
   if (litLedsGSR > SEGMENT_LEN) litLedsGSR = SEGMENT_LEN;
 
   for (uint8_t i = 0; i < SEGMENT_LEN; i++) {
