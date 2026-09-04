@@ -59,6 +59,15 @@
 #define CONF_REF        0.18f   // peak/total power ratio treated as fully trusted
 #define CONF_GATE       0.06f   // below this the bank is noise; freeze BPM
 
+// Peak search tie-break: harmonics/subharmonics of the true pulse land outside
+// normal resting-to-exertion HR and can outscore the fundamental on a noisy
+// capture. Bins in [NORMAL_BPM_LO, NORMAL_BPM_HI] compete on raw power; bins
+// outside are attenuated so they only win when clearly stronger. Full BPM_MIN..MAX
+// range stays searchable (do not narrow it) -- this only biases the tie-break.
+#define NORMAL_BPM_LO       50.0f
+#define NORMAL_BPM_HI       140.0f
+#define OUT_OF_RANGE_WEIGHT 0.5f
+
 // ---- GSR chain ----
 #define TONIC_TAU       45.0f
 #define PHASIC_TAU      0.7f
@@ -167,6 +176,10 @@ static inline float onepoleAlpha(float cornerHz) {
 
 static inline float clampf(float v, float lo, float hi) {
   return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static inline float bpmSearchWeight(float bpm) {
+  return (bpm >= NORMAL_BPM_LO && bpm <= NORMAL_BPM_HI) ? 1.0f : OUT_OF_RANGE_WEIGHT;
 }
 
 // ============================================================================
@@ -368,12 +381,14 @@ struct PulseTracker {
     // An edge bin also has no neighbor on one side, so the parabolic interpolation
     // below was already unsafe there -- excluding them fixes both problems at once.
     int best = 1;
-    float bestP = -1.0f, totalP = 0.0f;
+    float bestScore = -1.0f, totalP = 0.0f;
     for (int k = 0; k < N_BINS; k++) {
       float p = resRe[k] * resRe[k] + resIm[k] * resIm[k];
       totalP += p;
-      if (k > 0 && k < N_BINS - 1 && p > bestP) { bestP = p; best = k; }
+      float score = p * bpmSearchWeight(binBpm[k]);
+      if (k > 0 && k < N_BINS - 1 && score > bestScore) { bestScore = score; best = k; }
     }
+    float bestP = resRe[best] * resRe[best] + resIm[best] * resIm[best];
 
     float rawBpm = binBpm[best];
     {

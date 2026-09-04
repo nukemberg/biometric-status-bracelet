@@ -65,6 +65,19 @@ SLEW_BPM_PER_S = 8.0
 CONF_REF = 0.18  # peak/total power ratio treated as "fully trusted"
 CONF_GATE = 0.06  # below this the bank is treated as noise; BPM is frozen
 
+# Peak search tie-break: harmonics/subharmonics of the true pulse land outside
+# normal resting-to-exertion HR and can outscore the fundamental on a noisy
+# capture. Bins in [NORMAL_BPM_LO, NORMAL_BPM_HI] compete on raw power; bins
+# outside are attenuated so they only win when clearly stronger. Full BPM_MIN..MAX
+# range stays searchable -- this only biases the tie-break. Mirrors dsp.h.
+NORMAL_BPM_LO = 50.0
+NORMAL_BPM_HI = 140.0
+OUT_OF_RANGE_WEIGHT = 0.5
+
+
+def bpm_search_weight(bpm):
+    return 1.0 if NORMAL_BPM_LO <= bpm <= NORMAL_BPM_HI else OUT_OF_RANGE_WEIGHT
+
 # GSR chain
 TONIC_TAU = 45.0
 PHASIC_TAU = 0.7
@@ -221,14 +234,16 @@ class PulseTracker:
         unsafe for it.
         """
         best = 1
-        best_p = -1.0
+        best_score = -1.0
         total_p = 0.0
         for k in range(N_BINS):
             p = self.res[k].real ** 2 + self.res[k].imag ** 2
             total_p += p
-            if 0 < k < N_BINS - 1 and p > best_p:
-                best_p = p
+            score = p * bpm_search_weight(self.bpms[k])
+            if 0 < k < N_BINS - 1 and score > best_score:
+                best_score = score
                 best = k
+        best_p = self.res[best].real ** 2 + self.res[best].imag ** 2
 
         # Parabolic interpolation on the power peak for sub-bin resolution.
         raw_bpm = self.bpms[best]
