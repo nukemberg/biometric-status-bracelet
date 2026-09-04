@@ -271,6 +271,12 @@
     color: var(--ink-dim);
   }
   details.tuning > summary::-webkit-details-marker { display: none; }
+  details.tuning > summary::after {
+    content: "▸"; display: inline-block; margin-left: 0.5em;
+    font-size: 1.4em;
+    transition: transform 0.15s ease;
+  }
+  details.tuning[open] > summary::after { transform: rotate(90deg); }
   details.tuning[open] > summary { color: var(--ink); margin-bottom: 0.4rem; }
   .tune-group-head {
     margin-top: 0.9rem; color: var(--ink-faint);
