@@ -44,6 +44,17 @@ monitor *FLAGS="":
 monitor-save SECONDS="30" OUT="session.log":
     uv run tools/capture.py --seconds {{SECONDS}} --out {{OUT}}
 
+# ---- raw capture -----------------------------------------------------------
+
+# Build + flash firmware/raw_streamer (500 Hz GSR + MAX30102 IR csv, no DSP)
+raw-flash:
+    arduino-cli compile --fqbn {{FQBN}} {{LIBS}} --build-path firmware/raw_streamer/build firmware/raw_streamer
+    arduino-cli upload --port /dev/{{PORT}} --fqbn {{FQBN}} --input-dir firmware/raw_streamer/build firmware/raw_streamer
+
+# Paced-breathing capture for breath-detection ground truth (needs raw-flash first)
+breath-capture OUT="samples/breath_paced.csv" *FLAGS="":
+    uv run tools/paced_capture.py --port /dev/{{PORT}} --out {{OUT}} {{FLAGS}}
+
 # ---- BLE -------------------------------------------------------------------
 
 # Scan for the bracelet
