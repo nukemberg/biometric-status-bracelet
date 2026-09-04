@@ -93,6 +93,10 @@ test-ble:
 test-proto:
     uv run tools/blectl.py selftest
 
+# GSR arousal must report the cued SCRs in samples/breath_sigh_01.csv (-0b6)
+test-gsr:
+    uv run tools/gsr_scr_test.py
+
 # DSP C++ vs Python parity (defaults to the synthetic fixture)
 test-parity SAMPLE="samples/synthetic.csv":
     tools/dsp_v2_parity.sh {{SAMPLE}}
@@ -102,7 +106,7 @@ synth OUT="samples/synthetic.csv" *FLAGS="":
     uv run tools/make_synthetic_capture.py {{FLAGS}} > {{OUT}}
 
 # Run all automated tests
-test: test-ble test-proto test-parity
+test: test-ble test-proto test-parity test-gsr
     echo "all automated tests passed"
 
 

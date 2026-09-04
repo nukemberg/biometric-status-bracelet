@@ -103,13 +103,19 @@ SLOPE_CLAMP = 60.0  # counts/s; rejects contact/motion steps (measured up to 570
 # able to re-learn a genuinely new resting baseline over a multi-minute session.
 FLOOR_ATTACK_TAU = 2.0
 FLOOR_RELEASE_TAU = 180.0
-RANGE_GAIN = 2.5  # drive must reach 2.5x the quiet-baseline floor to peg the bar
-# counts/s. Keeps a dead/disconnected sensor from being amplified, and -- since one
-# ADC count of movement between samples is already 25 counts/s at DSP_HZ -- keeps
-# quantisation dither from pegging the bar. Confirmed against a real quiet-rest
-# capture (-l96), not just sized to guess above dither. Must match FLOOR_MIN in
-# dsp.h. Fitting the anti-alias RC (-jg6) would let this go lower still.
-FLOOR_MIN = 3.0
+# Tuned as a PAIR with FLOOR_MIN -- see the long comment in dsp.h. FLOOR_MIN is both
+# the dead-zone threshold and, via RANGE_GAIN * floor, the output scale; -0b6 was
+# FLOOR_MIN=3.0 setting the threshold above real SCR drive, so 4 of 7 cued responses
+# reported exactly zero. The denominator that guards against dither is preserved
+# (3.0 * 2.5 = 7.5 before, 1.2 * 6.0 = 7.2 now) while the threshold drops 2.5x.
+RANGE_GAIN = 6.0  # drive must reach 6x the quiet-baseline floor to peg the bar
+# counts/s. Not an operating point -- a guard against the denominator collapsing.
+# Keeps a dead/disconnected sensor from being amplified, and -- since one ADC count
+# of movement between samples is already 25 counts/s at DSP_HZ -- keeps quantisation
+# dither from pegging the bar. 1.2 sits below the quiet drive this hardware actually
+# shows (p50 0.80 - 3.01 across sessions). Must match FLOOR_MIN in dsp.h. Fitting
+# the anti-alias RC (-jg6) would let this go lower still.
+FLOOR_MIN = 1.2
 OUT_ATTACK_TAU = 0.10
 OUT_RELEASE_TAU = 1.50
 

@@ -397,11 +397,28 @@ everything afterwards. This is a floor-*track*, not a hold.
 
 Calibrated against a live capture (2026-09-03): quiet rest settles to ~0.03–0.05, a
 deliberate fist-clench SCR reaches 1.0 and decays over ~15–20 s, consistent with real SCR
-recovery timescales. `FLOOR_MIN` stays 3.0 (denominator `RANGE_GAIN × 3.0 = 7.5`) — sized to
-clear 12-bit quantisation dither (one ADC count of phasic movement between samples is
-already 25 counts/s at `DSP_HZ = 25`), confirmed against the same quiet-rest capture rather
-than only guessed above dither as before. Fitting the anti-alias RC (-jg6) would let this
-go lower still.
+recovery timescales.
+
+`FLOOR_MIN` and `RANGE_GAIN` are tuned as a **pair**, because `FLOOR_MIN` does two jobs in
+`target = (drive − floor) / (RANGE_GAIN × floor)`: it is the dead-zone threshold (drive below
+the floor reports exactly zero) *and*, through the denominator, the output scale. The
+2026-09-03 tuning raised it to 3.0 to fix the scale — correctly, per the dither argument —
+but that also lifted the threshold above the drive a real SCR produces, so most genuine
+responses were reported as no response at all (-0b6). Measured on
+`samples/breath_sigh_01.csv`, 4 of 7 cued SCRs came out as exactly 0.000 while the phasic
+component they derive from responded to all 7.
+
+Since 2026-09-04: `FLOOR_MIN` = 1.2, `RANGE_GAIN` = 6.0. The denominator that clears 12-bit
+quantisation dither (one ADC count of phasic movement between samples is already
+25 counts/s at `DSP_HZ = 25`) is preserved almost exactly — `3.0 × 2.5 = 7.5` before,
+`1.2 × 6.0 = 7.2` now — while the threshold alone drops 2.5×. All seven cued SCRs then
+register and stay graded (0.03–0.90 rather than four zeros and three near-saturations),
+quiet rest holds p90 = 0.074, and time above 0.9 on the artifact-heavy capture *falls* from
+5.2 % to 4.3 %, since a wider range pins less. `FLOOR_MIN` is a guard against the
+denominator collapsing, not an operating point: quiet drive measures p50 0.80–3.01 across
+sessions, and that 4× spread is exactly why the floor adapts and why its minimum must not
+double as its working value. `tools/gsr_scr_test.py` (`just test-gsr`) is the regression.
+Fitting the anti-alias RC (-jg6) would let this go lower still.
 
 ### 3.4 LED rendering
 
@@ -629,8 +646,11 @@ Then move your arm deliberately without breathing hard. If that produces a bigge
 excursion than the breath did, the response you are looking at is mechanical, not
 electrodermal — check strap tension and electrode contact before tuning anything.
 
-**Step 4 — pick the floor.** Done 2026-09-03 (-9ny, -l96) against a live capture (fist
-clench as the provocation, not a breath): `FLOOR_MIN` stays 3.0, `FLOOR_ATTACK_TAU` = 2 s,
+**Step 4 — pick the floor.** Re-done 2026-09-04 (-0b6) against `samples/breath_sigh_01.csv`,
+seven cued deep breaths 60 s apart — a repeatable provocation with ground truth in the
+capture, which the 2026-09-03 fist-clench pass (-9ny, -l96) did not have:
+`FLOOR_MIN` = 1.2 with `RANGE_GAIN` = 6.0 (see §3.3 — they must move together),
+`FLOOR_ATTACK_TAU` = 2 s,
 `FLOOR_RELEASE_TAU` = 180 s (see §3.3 for why release must run far longer than any single
 SCR). None of `FLOOR_MIN`/`FLOOR_ATTACK_TAU`/`FLOOR_RELEASE_TAU`/`RANGE_GAIN` are
 runtime-tunable today, so a future re-tune (e.g. after fitting the anti-alias RC, -jg6)

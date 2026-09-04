@@ -88,16 +88,34 @@
 // over a multi-minute wear session.
 #define FLOOR_ATTACK_TAU  2.0f
 #define FLOOR_RELEASE_TAU 180.0f
-#define RANGE_GAIN      2.5f
-// Floor minimum, in counts/s. 0.5 was far below the noise floor of the real signal:
+// RANGE_GAIN and FLOOR_MIN are tuned as a PAIR, because FLOOR_MIN does two jobs at
+// once in `target = (drive - floor) / (RANGE_GAIN * floor)`. It is the dead-zone
+// threshold (drive below floor reports exactly zero) AND, through the denominator,
+// the output scale. -l96 raised it to 3.0 to fix the scale -- correctly, per the
+// dither argument below -- but that also raised the threshold above the drive a
+// real SCR produces, so most genuine responses were reported as no response at all
+// (-0b6): 4 of the 7 cued SCRs in samples/breath_sigh_01.csv came out as 0.000,
+// while the phasic component they were derived from responded to all 7.
+//
+// The fix separates the two roles. What guards against dither is the DENOMINATOR,
+// and it is preserved almost exactly: 3.0 * 2.5 = 7.5 before, 1.2 * 6.0 = 7.2 now.
+// The threshold alone drops 2.5x. Measured over all three breath captures, every
+// cued SCR now registers and stays graded (0.03 - 0.90 rather than four zeros and
+// three near-saturations), quiet rest holds p90 = 0.074, and time above 0.9 on the
+// artifact-heavy capture falls from 5.2 % to 4.3 % -- a wider range pins less.
+// tools/gsr_scr_test.py is the regression.
+#define RANGE_GAIN      6.0f
+// Floor minimum, in counts/s. Not an operating point -- a guard against the
+// denominator collapsing. 0.5 was far below the noise floor of the real signal:
 // slope is measured in counts per SECOND at DSP_HZ = 25, so a single ADC count of
 // phasic wiggle between two samples is already 25 counts/s, against a floored
 // denominator of RANGE_GAIN * 0.5 = 1.25 -- arousal pinned at 1.0 on 12-bit
 // quantisation dither alone, with raw GSR sitting quietly in a ~100-count band.
-// 3.0 (denominator 7.5) keeps a genuine SCR on scale while riding above the dither;
-// confirmed against a real quiet-rest capture (-l96), not just sized to guess above
-// dither. Fitting the anti-alias RC (-jg6) would let this go lower still.
-#define FLOOR_MIN       3.0f
+// 1.2 sits below the quiet drive this hardware actually shows (p50 0.80 - 3.01
+// depending on session; that 4x spread across sessions is why the floor adapts at
+// all and why its minimum must not double as its operating value). Fitting the
+// anti-alias RC (-jg6) would let this go lower still.
+#define FLOOR_MIN       1.2f
 #define OUT_ATTACK_TAU  0.10f
 #define OUT_RELEASE_TAU 1.50f
 
