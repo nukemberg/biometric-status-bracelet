@@ -72,19 +72,31 @@ SCR_ATTACK_TAU = 0.15
 SCR_RELEASE_TAU = 3.0
 SLOPE_CLAMP = 60.0  # counts/s; rejects contact/motion steps (measured up to 570)
 #
-# Auto-ranging is relative to *recent* SCR activity rather than to an absolute peak
-# hold. A peak-hold envelope gets pinned by a single contact artifact and then
-# crushes everything after it to zero (measured: envelope stuck at 2000+ counts/s
-# against a median drive of 2.6). Normalising against a slow mean instead keeps the
-# bar alive and reactive, at the cost of "resting" not reading as a low absolute
-# value -- the right trade for an LED display, per the responsiveness-over-accuracy
-# priority.
-RANGE_TAU = 30.0
-RANGE_GAIN = 2.5  # drive must reach 2.5x its recent mean to peg the bar
+# FLOOR_ATTACK/RELEASE_TAU replace the old RANGE_TAU mean-tracker (see -9ny, -l96): a
+# plain EMA of drive settles arousal near 1/RANGE_GAIN at ANY steady drive level,
+# resting or not, because the normalizer chases whatever drive currently is -- right
+# for an LED display that must stay reactive, wrong for an absolute measure. This
+# instead tracks the recent QUIET-baseline floor: fast down when drive is below it
+# (chases the true noise floor quickly), slow up when drive is above it (so a real,
+# sustained SCR can't drag its own baseline up and erode itself within the
+# observation window). A peak-hold envelope was tried and rejected for the same
+# reason a floor-*hold* would be: one contact artifact pins it and crushes
+# everything after -- this is a floor-*track*, not a hold.
+#
+# Calibrated 2026-09-03 against a live capture: FLOOR_ATTACK_TAU=2s /
+# FLOOR_RELEASE_TAU=15s let a ~15s clench-induced SCR erode its own floor and decay
+# back to near-zero in under 10s -- physiologically too fast (real SCR recovery runs
+# 10-20s+). 180s keeps the floor stable across any single real event while still
+# able to re-learn a genuinely new resting baseline over a multi-minute session.
+FLOOR_ATTACK_TAU = 2.0
+FLOOR_RELEASE_TAU = 180.0
+RANGE_GAIN = 2.5  # drive must reach 2.5x the quiet-baseline floor to peg the bar
 # counts/s. Keeps a dead/disconnected sensor from being amplified, and -- since one
 # ADC count of movement between samples is already 25 counts/s at DSP_HZ -- keeps
-# quantisation dither from pegging the bar. Must match RANGE_FLOOR in dsp.h.
-RANGE_FLOOR = 3.0
+# quantisation dither from pegging the bar. Confirmed against a real quiet-rest
+# capture (-l96), not just sized to guess above dither. Must match FLOOR_MIN in
+# dsp.h. Fitting the anti-alias RC (-jg6) would let this go lower still.
+FLOOR_MIN = 3.0
 OUT_ATTACK_TAU = 0.10
 OUT_RELEASE_TAU = 1.50
 
@@ -259,7 +271,8 @@ class GsrTracker:
         self.a_phasic = ema_alpha(PHASIC_TAU)
         self.a_attack = ema_alpha(SCR_ATTACK_TAU)
         self.a_release = ema_alpha(SCR_RELEASE_TAU)
-        self.a_range = ema_alpha(RANGE_TAU)
+        self.a_floor_down = ema_alpha(FLOOR_ATTACK_TAU)
+        self.a_floor_up = ema_alpha(FLOOR_RELEASE_TAU)
         self.a_out_attack = ema_alpha(OUT_ATTACK_TAU)
         self.a_out_release = ema_alpha(OUT_RELEASE_TAU)
 
@@ -267,11 +280,11 @@ class GsrTracker:
         self.smooth = 0.0
         self.prev = 0.0
         self.drive = 0.0
-        self.range = RANGE_FLOOR
+        self.floor = FLOOR_MIN
         self.arousal = 0.0
 
     def reset(self, x):
-        """Long-press recalibration: re-anchor tonic and the auto-range envelope."""
+        """Long-press recalibration: re-anchor tonic and the floor envelope."""
         self.tonic = x
         self.smooth = x
         # `prev` holds the previous PHASIC value, not the previous raw sample, and
@@ -287,7 +300,7 @@ class GsrTracker:
         # them: 0.107 (C++) against 1.000 (here).
         self.prev = 0.0
         self.drive = 0.0
-        self.range = RANGE_FLOOR
+        self.floor = FLOOR_MIN
         self.arousal = 0.0
 
     def update(self, x):
@@ -313,12 +326,14 @@ class GsrTracker:
         a = self.a_attack if slope > self.drive else self.a_release
         self.drive += a * (slope - self.drive)
 
-        # Auto-range against recent mean activity; replaces the hardcoded /120.0.
-        self.range += self.a_range * (self.drive - self.range)
-        if self.range < RANGE_FLOOR:
-            self.range = RANGE_FLOOR
+        # Normalize against the recent quiet-baseline floor, not the recent mean --
+        # see FLOOR_ATTACK/RELEASE_TAU comment above.
+        a = self.a_floor_down if self.drive < self.floor else self.a_floor_up
+        self.floor += a * (self.drive - self.floor)
+        if self.floor < FLOOR_MIN:
+            self.floor = FLOOR_MIN
 
-        target = min(1.0, self.drive / (RANGE_GAIN * self.range))
+        target = min(1.0, max(0.0, (self.drive - self.floor) / (RANGE_GAIN * self.floor)))
         a = self.a_out_attack if target > self.arousal else self.a_out_release
         self.arousal += a * (target - self.arousal)
         return self.arousal, self.tonic, phasic

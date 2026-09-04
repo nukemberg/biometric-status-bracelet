@@ -65,16 +65,30 @@
 #define SCR_ATTACK_TAU  0.15f
 #define SCR_RELEASE_TAU 3.0f
 #define SLOPE_CLAMP     60.0f   // counts/s; rejects contact/motion steps
-#define RANGE_TAU       30.0f
+// FLOOR_ATTACK/RELEASE replace the old RANGE_TAU mean-tracker (see -9ny, -l96): a
+// plain EMA of drive settles arousal near 1/RANGE_GAIN at ANY steady drive level,
+// resting or not, because the normalizer chases whatever drive currently is. floor
+// instead tracks the recent QUIET envelope -- fast down when drive is below it
+// (chases the true noise floor quickly), slow up when drive is above it (a real,
+// sustained SCR must not be allowed to drag its own baseline up and erode itself
+// within the observation window). Calibrated 2026-09-03 against a live capture:
+// FLOOR_ATTACK_TAU=2s / FLOOR_RELEASE_TAU=15s let a ~15s clench-induced SCR erode
+// its own floor and decay back to near-zero in under 10s -- physiologically too
+// fast (real SCR recovery runs 10-20s+). 180s keeps the floor stable across any
+// single real event while still able to re-learn a genuinely new resting baseline
+// over a multi-minute wear session.
+#define FLOOR_ATTACK_TAU  2.0f
+#define FLOOR_RELEASE_TAU 180.0f
 #define RANGE_GAIN      2.5f
-// Floor on the auto-range denominator, in counts/s. 0.5 was too low to survive a
-// real wrist: slope is measured in counts per SECOND at DSP_HZ = 25, so a single
-// ADC count of phasic wiggle between two samples is already 25 counts/s, against a
-// floored denominator of RANGE_GAIN * 0.5 = 1.25. Arousal pinned at 1.0 on 12-bit
+// Floor minimum, in counts/s. 0.5 was far below the noise floor of the real signal:
+// slope is measured in counts per SECOND at DSP_HZ = 25, so a single ADC count of
+// phasic wiggle between two samples is already 25 counts/s, against a floored
+// denominator of RANGE_GAIN * 0.5 = 1.25 -- arousal pinned at 1.0 on 12-bit
 // quantisation dither alone, with raw GSR sitting quietly in a ~100-count band.
-// 3.0 (denominator 7.5) keeps a genuine SCR on scale while riding above the dither.
-// Provisional -- the honest value comes from a calibrated resting capture (-cal).
-#define RANGE_FLOOR     3.0f
+// 3.0 (denominator 7.5) keeps a genuine SCR on scale while riding above the dither;
+// confirmed against a real quiet-rest capture (-l96), not just sized to guess above
+// dither. Fitting the anti-alias RC (-jg6) would let this go lower still.
+#define FLOOR_MIN       3.0f
 #define OUT_ATTACK_TAU  0.10f
 #define OUT_RELEASE_TAU 1.50f
 
@@ -399,8 +413,8 @@ struct PulseTracker {
 // GSR TWO-TIMESCALE AROUSAL ENGINE (auto-ranging)
 // ============================================================================
 struct GsrTracker {
-  float aTonic, aPhasic, aAttack, aRelease, aRange, aOutAttack, aOutRelease;
-  float tonic, smooth, prevPhasic, drive, range, arousal;
+  float aTonic, aPhasic, aAttack, aRelease, aFloorDown, aFloorUp, aOutAttack, aOutRelease;
+  float tonic, smooth, prevPhasic, drive, floor, arousal;
   bool primed;
 
   void begin() {
@@ -408,19 +422,20 @@ struct GsrTracker {
     aPhasic = emaAlpha(PHASIC_TAU);
     aAttack = emaAlpha(SCR_ATTACK_TAU);
     aRelease = emaAlpha(SCR_RELEASE_TAU);
-    aRange = emaAlpha(RANGE_TAU);
+    aFloorDown = emaAlpha(FLOOR_ATTACK_TAU);
+    aFloorUp = emaAlpha(FLOOR_RELEASE_TAU);
     aOutAttack = emaAlpha(OUT_ATTACK_TAU);
     aOutRelease = emaAlpha(OUT_RELEASE_TAU);
     primed = false;
     reset(0.0f);
   }
 
-  // Long-press recalibration: re-anchor tonic and the auto-range envelope.
+  // Long-press recalibration: re-anchor tonic and the floor envelope.
   void reset(float x) {
     tonic = smooth = x;
     prevPhasic = 0.0f;
     drive = 0.0f;
-    range = RANGE_FLOOR;
+    floor = FLOOR_MIN;
     arousal = 0.0f;
   }
 
@@ -442,15 +457,17 @@ struct GsrTracker {
 
     drive += (slope > drive ? aAttack : aRelease) * (slope - drive);
 
-    // Auto-range against recent mean activity, replacing the old hardcoded /120.0
-    // scale that pinned the bar at zero for 33% of bio2.log and never passed 0.42.
-    // A peak-hold envelope was tried and rejected: one contact artifact pins it and
-    // crushes everything after. Trade-off: "resting" reads mid-scale rather than
-    // low -- right for an LED display, wrong for a clinical measure.
-    range += aRange * (drive - range);
-    if (range < RANGE_FLOOR) range = RANGE_FLOOR;
+    // Normalize against the recent QUIET-baseline floor, not the recent mean (see
+    // FLOOR_ATTACK/RELEASE_TAU comment above) -- a mean-tracker settles arousal near
+    // 1/RANGE_GAIN at any steady drive, resting or not, so it can only see change
+    // relative to recent activity, never absolute arousal. A peak-hold envelope was
+    // tried and rejected too: one contact artifact pins it and crushes everything
+    // after. This is a floor-hold instead: fast down, slow up, so it still adapts
+    // over a real session without one sustained SCR eroding its own signal.
+    floor += (drive < floor ? aFloorDown : aFloorUp) * (drive - floor);
+    if (floor < FLOOR_MIN) floor = FLOOR_MIN;
 
-    float target = fminf(1.0f, drive / (RANGE_GAIN * range));
+    float target = fminf(1.0f, fmaxf(0.0f, (drive - floor) / (RANGE_GAIN * floor)));
     arousal += (target > arousal ? aOutAttack : aOutRelease) * (target - arousal);
   }
 };

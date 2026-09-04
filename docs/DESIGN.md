@@ -378,23 +378,30 @@ by the half-wave-rectified **derivative of the phasic component** (not of the sm
 signal — the raw drift would otherwise read as permanent arousal), clamped at 60 counts/s
 to reject contact steps, with fast attack (0.15 s) / slow release (3 s).
 
-Auto-range divides by a slow mean of recent drive (τ = 30 s, gain 2.5), replacing a
-hardcoded `/120.0`. A peak-hold envelope was tried and rejected: a single contact artifact
-pins it and crushes everything afterwards to zero.
+**Superseded 2026-09-03 (-9ny, -l96).** Originally normalized against a slow mean of
+recent drive (τ = 30 s, gain 2.5), replacing a hardcoded `/120.0`. That reads change
+relative to recent activity, not absolute arousal: at any steady drive level, resting or
+not, the mean-tracker settles the output near `1/RANGE_GAIN` by construction, because the
+normalizer chases whatever drive currently is. Correct for a lively LED bar, wrong for an
+absolute measure — noted as a deliberate tradeoff at the time ("resting reads mid-scale
+rather than low"), later judged wrong: the LED behaviour should be a presentation choice
+layered on top of an accurate measurement, not baked into the measurement itself.
 
-**Tradeoff:** "resting" reads mid-scale rather than low, because the scale is relative to
-recent activity. Correct for a lively LED bar, wrong for an absolute measure.
+Now normalizes against the recent **quiet-baseline floor** instead of the mean: fast down
+when drive is below the floor (chases the true noise floor quickly), slow up when drive is
+above it (`FLOOR_ATTACK_TAU` = 2 s / `FLOOR_RELEASE_TAU` = 180 s), so a real sustained SCR
+can't drag its own baseline up and erode itself within the observation window — a plain
+30 s mean-tracker did exactly that. A peak-hold envelope was tried and rejected for the
+same reason a floor-*hold* would be: a single contact artifact pins it and crushes
+everything afterwards. This is a floor-*track*, not a hold.
 
-Measured on `bio2.log`: 0 % of samples pinned at zero (was 33 %), 13 % saturated, full
-range used.
-
-**The floor matters more than it looks.** Slope is counts per *second* at `DSP_HZ = 25`, so
-one ADC count of phasic movement between two consecutive samples is already 25 counts/s.
-`RANGE_FLOOR` was 0.5, giving a floored denominator of `RANGE_GAIN × 0.5 = 1.25` — on-wrist,
-raw GSR resting quietly inside a ~100-count band swung arousal across most of its range,
-because 12-bit quantisation dither alone clears that denominator by an order of magnitude.
-Now 3.0 (denominator 7.5). That is sized to sit above dither, **not measured** — see -9ny
-and §4.1.
+Calibrated against a live capture (2026-09-03): quiet rest settles to ~0.03–0.05, a
+deliberate fist-clench SCR reaches 1.0 and decays over ~15–20 s, consistent with real SCR
+recovery timescales. `FLOOR_MIN` stays 3.0 (denominator `RANGE_GAIN × 3.0 = 7.5`) — sized to
+clear 12-bit quantisation dither (one ADC count of phasic movement between samples is
+already 25 counts/s at `DSP_HZ = 25`), confirmed against the same quiet-rest capture rather
+than only guessed above dither as before. Fitting the anti-alias RC (-jg6) would let this
+go lower still.
 
 ### 3.4 LED rendering
 
@@ -574,7 +581,7 @@ another, on the same electrodes), so no threshold on it can be trusted across se
 See §4.2 step 5 for the replacement — PPG IR DC, which is gated by contact rather than
 by whatever the floating leads happen to be near.
 
-GSR is still read and still drives the arousal auto-range floor (§3.5); only the wear
+GSR is still read and still drives the arousal floor tracker (§3.5); only the wear
 decision moved off it.
 
 Historical procedure (no longer applicable to wear gating):
@@ -596,11 +603,12 @@ tools/blectl.py monitor --seconds 180 --csv rest.csv
 ```
 
 `gsr_raw` should drift slowly downward (tonic habituation, ~0.9 counts/s) — that drift is
-subtracted by design and must **not** move arousal. What to expect in `arousal`: with the
-auto-range being relative, resting settles **mid-scale, around 0.3–0.6, and wanders**. It
-does not sit at zero, and that is intentional (§3.3). What is *wrong* is arousal parked at
-or near 1.0 while `gsr_raw` moves by only a few counts — that is the dither-saturation
-failure the floor exists to prevent.
+subtracted by design and must **not** move arousal. What to expect in `arousal` (since
+-9ny/-l96, §3.3): resting should settle **low, around 0.03–0.05**, occasionally bumping
+higher on genuine spontaneous EDA activity before decaying back down. What is *wrong* is
+arousal parked at or near 1.0 for more than the first ~10 s (a fresh-contact onset
+transient is expected and self-resolves) while `gsr_raw` moves by only a few counts — that
+is the dither-saturation failure the floor exists to prevent.
 
 **Step 3 — provoke a real SCR.** The standard bench provocation is a sharp inhale. Sit
 still for 30 s, then take one deep breath, then hold still for another 60 s. Repeat 3–4
@@ -621,13 +629,14 @@ Then move your arm deliberately without breathing hard. If that produces a bigge
 excursion than the breath did, the response you are looking at is mechanical, not
 electrodermal — check strap tension and electrode contact before tuning anything.
 
-**Step 4 — pick the floor.** `RANGE_FLOOR` is **not** runtime-tunable today (-9ny covers
-exposing it), so this step needs a reflash per value. Replay the captures through
-`tools/dsp_v2_sim.py` instead, which is the whole point of the offline harness: sweep the
-constant against `rest.csv` and the breath capture until resting sits low-to-mid and a
-real SCR still reaches full scale. Then change it in **both** `dsp.h` and `dsp_v2_sim.py`
-and re-run `tools/dsp_v2_parity.sh` — the constants are duplicated, and parity is the only
-thing that catches them drifting apart.
+**Step 4 — pick the floor.** Done 2026-09-03 (-9ny, -l96) against a live capture (fist
+clench as the provocation, not a breath): `FLOOR_MIN` stays 3.0, `FLOOR_ATTACK_TAU` = 2 s,
+`FLOOR_RELEASE_TAU` = 180 s (see §3.3 for why release must run far longer than any single
+SCR). None of `FLOOR_MIN`/`FLOOR_ATTACK_TAU`/`FLOOR_RELEASE_TAU`/`RANGE_GAIN` are
+runtime-tunable today, so a future re-tune (e.g. after fitting the anti-alias RC, -jg6)
+still needs a reflash per value; `tools/dsp_v2_sim.py` remains the offline harness for
+sweeping them against a capture before touching `dsp.h`, and `tools/dsp_v2_parity.sh` must
+pass afterward since the constants are duplicated in both files.
 
 ### 4.2 MAX30102 bring-up and calibration
 
